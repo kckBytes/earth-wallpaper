@@ -30,7 +30,9 @@ final class GlobeRenderer {
 
     private int prog, vbo;
     private int uRes, uCenter, uRadius, uCamDist, uView, uSun, uGmst, uCloudMix, uFade, uTime,
-            uStarShift, uStars, uAdvect, uAdvectPrev, uMarkerPx, uMarkerAmt, uMarkerSize, uPass, uRect;
+            uStarShift, uStars, uAdvect, uAdvectPrev, uMarkerPx, uMarkerAmt, uMarkerSize, uPass, uRect, uMode;
+    // replay: frame A (older), frame B (newer), motion A->B. Swapped in for the cloud slots while a replay plays.
+    private final int[] rtex = new int[3];
     private int labelProg, uLabRect, uLabAlpha, labelTex = 0, labelW, labelH;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
     private int fbo, fboTex, fboW, fboH;
@@ -43,6 +45,9 @@ final class GlobeRenderer {
         float labelAmt, labelCx, labelCy;          // city-name label (GL px, centre)
         boolean stars;
         long nowMs, cloudNowMs;           // cloudNowMs: clock for cloud motion (runs behind during a time-lapse)
+        int mode;                         // shader view: 0 natural, 1 infrared, 2 sea temperature, 3 night lights
+        boolean replay;                   // draw the replay pair instead of the live slots
+        float replayMix, replayHours;     // position between frame A and B (0..1), hours between them
         final float[] view = new float[9], sun = new float[3];
     }
 
@@ -68,7 +73,7 @@ final class GlobeRenderer {
         uFade = loc("uFade"); uTime = loc("uTime"); uStarShift = loc("uStarShift"); uStars = loc("uStars");
         uAdvect = loc("uAdvect"); uAdvectPrev = loc("uAdvectPrev");
         uMarkerPx = loc("uMarkerPx"); uMarkerAmt = loc("uMarkerAmt"); uMarkerSize = loc("uMarkerSize");
-        uPass = loc("uPass"); uRect = loc("uRect");
+        uPass = loc("uPass"); uRect = loc("uRect"); uMode = loc("uMode");
         String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev"};
         for (int i = 0; i < samplers.length; i++) GLES20.glUniform1i(loc(samplers[i]), i);
 
@@ -82,6 +87,7 @@ final class GlobeRenderer {
         GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, tri.length * 4, fb, GLES20.GL_STATIC_DRAW);
 
         GLES20.glGenTextures(7, tex, 0);
+        GLES20.glGenTextures(3, rtex, 0);
         String ext = GLES20.glGetString(GLES20.GL_EXTENSIONS);
         if (ext != null && ext.contains("GL_EXT_texture_filter_anisotropic")) {
             float[] mx = new float[1];
@@ -144,8 +150,22 @@ final class GlobeRenderer {
         haveClouds = true;
     }
 
-    private void uploadFlow(int unitTex, ByteBuffer flow) {
-        bind(tex[unitTex]);
+    /** Replay frames: which = 0 (A, older) or 1 (B, newer). */
+    void uploadReplay(int which, Images.Single img) {
+        bind(rtex[which]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R8, img.w, img.h, 0, GLES30.GL_RED,
+                GLES20.GL_UNSIGNED_BYTE, img.data);
+        finishTexture(true);
+    }
+    void uploadReplayFlow(ByteBuffer flow) { uploadFlowTo(rtex[2], flow); }
+    /** B becomes A (the texture just swaps roles); B is then refilled with the next frame. */
+    void swapReplay() { int t = rtex[0]; rtex[0] = rtex[1]; rtex[1] = t; }
+
+    private void uploadFlow(int unitTex, ByteBuffer flow) { uploadFlowTo(tex[unitTex], flow); }
+
+    private void uploadFlowTo(int texId, ByteBuffer flow) {
+        bind(texId);
         GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG8, FlowEstimator.GW, FlowEstimator.GH, 0,
                 GLES30.GL_RG, GLES20.GL_UNSIGNED_BYTE, flow);
@@ -209,7 +229,9 @@ final class GlobeRenderer {
         if (off) GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo);
         GLES20.glViewport(0, 0, fw, fh);
         GLES20.glUseProgram(prog);
-        int[] units = {tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], tex[3 + prev], tex[5 + cur], tex[5 + prev]};
+        int[] units = f.replay
+                ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], rtex[1], rtex[0], rtex[2], rtex[2]}
+                : new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], tex[3 + prev], tex[5 + cur], tex[5 + prev]};
         for (int i = 0; i < units.length; i++) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, units[i]);
@@ -221,13 +243,19 @@ final class GlobeRenderer {
         GLES20.glUniformMatrix3fv(uView, 1, false, f.view, 0);
         GLES20.glUniform3f(uSun, f.sun[0], f.sun[1], f.sun[2]);
         GLES20.glUniform1f(uGmst, f.gmst);
-        GLES20.glUniform1f(uCloudMix, f.cloudMix);
+        GLES20.glUniform1f(uCloudMix, f.replay ? f.replayMix : f.cloudMix);
+        GLES30.glUniform1i(uMode, f.mode);
         GLES20.glUniform1f(uFade, f.fade);
         GLES20.glUniform1f(uTime, f.time);
         GLES20.glUniform2f(uStarShift, f.starDx * s, f.starDy * s);
         GLES20.glUniform1f(uStars, f.stars ? 1f : 0f);
-        GLES20.glUniform1f(uAdvect, hoursSince(slotTime[cur], f.cloudNowMs));
-        GLES20.glUniform1f(uAdvectPrev, hoursSince(slotTime[prev], f.cloudNowMs));
+        if (f.replay) {          // morph A -> B: A drifts forward along the motion, B comes back from where it was
+            GLES20.glUniform1f(uAdvect, -(1f - f.replayMix) * f.replayHours);
+            GLES20.glUniform1f(uAdvectPrev, f.replayMix * f.replayHours);
+        } else {
+            GLES20.glUniform1f(uAdvect, hoursSince(slotTime[cur], f.cloudNowMs));
+            GLES20.glUniform1f(uAdvectPrev, hoursSince(slotTime[prev], f.cloudNowMs));
+        }
         GLES20.glUniform2f(uMarkerPx, f.markerX * s, f.markerY * s);
         GLES20.glUniform1f(uMarkerAmt, f.markerAmt);
         GLES20.glUniform1f(uMarkerSize, f.markerSize * s);
@@ -278,6 +306,7 @@ final class GlobeRenderer {
     void release() {
         if (fbo != 0) { GLES20.glDeleteFramebuffers(1, new int[]{fbo}, 0); GLES20.glDeleteTextures(1, new int[]{fboTex}, 0); fbo = 0; }
         GLES20.glDeleteTextures(7, tex, 0);
+        GLES20.glDeleteTextures(3, rtex, 0);
         GLES20.glDeleteBuffers(1, new int[]{vbo}, 0);
         GLES20.glDeleteProgram(prog);
         haveDay = haveLights = haveWater = haveClouds = false;

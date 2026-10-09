@@ -128,6 +128,26 @@ public class SettingsActivity extends Activity {
         slider("Tilt sensitivity", Prefs.PARALLAX_GAIN, Prefs.DEF_GAIN, 5, 100, 0.01f, "%");
         toggle("Stars", Prefs.STARS, true);
 
+        header("Globe view");
+        RadioGroup views = new RadioGroup(this);
+        String[] vn = {"Natural — true colour, live clouds", "Infrared — cloud-top temperature, day and night",
+                "Sea temperature — today's ocean surface", "Night lights — the whole planet after dark"};
+        for (int i = 0; i < vn.length; i++) views.addView(radio(vn[i], 100 + i));
+        views.check(100 + p.getInt(Prefs.VIEW, 0));
+        views.setOnCheckedChangeListener((g, id) -> p.edit().putInt(Prefs.VIEW, id - 100).apply());
+        col.addView(views, lp(dp(8)));
+        TextView vHint = text("Infrared and sea temperature come from the live 5-satellite map. In infrared, white is cold "
+                + "high cloud and colours mark the coldest storm tops.", 12, false);
+        vHint.setAlpha(0.6f);
+        col.addView(vHint, lp(dp(2)));
+
+        header("Replay (back triple-tap)");
+        steps("Replay the last", Prefs.REPLAY_H, Prefs.REPLAY_CHOICES, 12, " h");
+        TextView rHint = text("Plays the real satellite record of the past hours: clouds forming, drifting, dissolving. "
+                + "The phone keeps only that many hours of frames (about 0.4 MB per half hour) and fetches the past day on Wi-Fi.", 12, false);
+        rHint.setAlpha(0.6f);
+        col.addView(rHint, lp(dp(2)));
+
         header("Clouds");
         toggle("Live clouds: 5 satellites, new map every 10 min (off = 3-hourly map)", Prefs.LIVE_CLOUDS, true);
         toggle("Full-resolution clouds on Wi-Fi only", Prefs.HD_WIFI_ONLY, true);
@@ -139,9 +159,10 @@ public class SettingsActivity extends Activity {
         });
         col.addView(refresh, lp(dp(8)));
 
-        TextView credits = text("Sun position computed live. Clouds: global satellite composite refreshed "
-                + "every 3 hours, checked every 30 min; clouds drift along their measured motion between maps "
-                + "— contains modified EUMETSAT data (clouds.matteason.co.uk, CC0). "
+        TextView credits = text("Sun position computed live. Live clouds: GOES-East, GOES-West, Himawari (NASA GIBS) and "
+                + "Meteosat MTG + Indian Ocean (EUMETSAT) stitched every 10 min at github.com/kckBytes/earth-live, with "
+                + "GHRSST sea-surface temperature and SRTM elevation. Classic: clouds.matteason.co.uk (CC0). "
+                + "Contains modified EUMETSAT data. "
                 + "Surface: NASA Blue Marble (monthly) and Black Marble city lights.", 12, false);
         credits.setAlpha(0.55f);
         col.addView(credits, lp(dp(28)));
@@ -290,6 +311,27 @@ public class SettingsActivity extends Activity {
         s.setChecked(p.getBoolean(key, def));
         s.setOnCheckedChangeListener((v, on) -> p.edit().putBoolean(key, on).apply());
         col.addView(s, lp(dp(10)));
+    }
+
+    /** Seek bar over a fixed list of values (stored as int). */
+    private void steps(String label, String key, int[] values, int def, String suffix) {
+        TextView t = text("", 14, false);
+        col.addView(t, lp(dp(14)));
+        SeekBar sb = new SeekBar(this);
+        sb.setMax(values.length - 1);
+        int v0 = p.getInt(key, def), idx = 0;
+        for (int i = 0; i < values.length; i++) if (values[i] == v0) idx = i;
+        sb.setProgress(idx);
+        t.setText(label + " " + values[idx] + suffix);
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int i, boolean user) {
+                t.setText(label + " " + values[i] + suffix);
+                if (user) p.edit().putInt(key, values[i]).apply();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { }
+            @Override public void onStopTrackingTouch(SeekBar s) { }
+        });
+        col.addView(sb, lp(0));
     }
 
     /** Integer seek bar over [min, max]; stored value = progress * unit (so % sliders store 0.7..1.3). */

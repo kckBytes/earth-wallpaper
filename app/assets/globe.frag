@@ -23,6 +23,7 @@ uniform vec2  uMarkerPx;     // home-city marker, px (GL convention)
 uniform float uMarkerAmt;    // 0 = hidden
 uniform float uMarkerSize;   // px
 uniform int   uPass;         // 0 = space only (full screen, cheap), 1 = everything (globe bounding box)
+uniform int   uMode;         // view: 0 natural, 1 infrared (uClouds holds temperature), 2 sea temperature, 3 night lights
 
 uniform sampler2D uDay;        // Blue Marble for the current month, sRGB
 uniform sampler2D uLights;     // city lights, single channel
@@ -74,6 +75,43 @@ vec3 toLinear(vec3 c) { return c * c * (c * 0.2 + 0.8); }   // cheap sRGB -> lin
 vec2 flowShift(sampler2D f, vec2 uv, float hours) {
     vec2 d = (textureLod(f, uv, 0.0).rg * 255.0 - 128.0) / 127.0 * FLOW_MAX;
     return vec2(d.x / 360.0, -d.y / 180.0) * hours;
+}
+
+// Raw value of the data map (cloud brightness, temperature...), advected and crossfaded like the clouds.
+float rawData(vec2 uv, vec2 shiftCur, vec2 shiftPrev) {
+    float raw = tex(uClouds, uv - shiftCur).r;
+    if (uCloudMix < 0.999) raw = mix(tex(uCloudsPrev, uv - shiftPrev).r, raw, uCloudMix);
+    return raw;
+}
+
+// Infrared enhancement (cloud-top temperature, deg C), in the spirit of classic weather-satellite IR:
+// warm ground clear, then grey to white as tops get colder, then colours for deep convection.
+vec4 irColour(float T) {
+    float a = clamp((12.0 - T) / 42.0, 0.0, 1.0);
+    vec3 c = vec3(mix(0.30, 0.95, a));
+    if (T < -32.0) {
+        float t = -T;
+        c = t < 45.0 ? mix(vec3(0.25, 0.85, 1.00), vec3(0.10, 0.35, 1.00), (t - 32.0) / 13.0)
+          : t < 55.0 ? mix(vec3(0.10, 0.35, 1.00), vec3(0.10, 0.85, 0.30), (t - 45.0) / 10.0)
+          : t < 63.0 ? mix(vec3(0.10, 0.85, 0.30), vec3(1.00, 0.92, 0.20), (t - 55.0) / 8.0)
+          : t < 71.0 ? mix(vec3(1.00, 0.92, 0.20), vec3(1.00, 0.30, 0.10), (t - 63.0) / 8.0)
+          : t < 79.0 ? mix(vec3(1.00, 0.30, 0.10), vec3(0.95, 0.20, 0.90), (t - 71.0) / 8.0)
+          :            mix(vec3(0.95, 0.20, 0.90), vec3(1.0), clamp((t - 79.0) / 8.0, 0.0, 1.0));
+        a = 1.0;
+    }
+    return vec4(c * c, pow(a, 0.8));     // colour in linear space
+}
+
+// Sea-surface temperature palette (deg C): cold purple-blue through green and yellow to hot red.
+vec3 sstColour(float T) {
+    vec3 c;
+    if (T < 5.0)       c = mix(vec3(0.20, 0.08, 0.40), vec3(0.10, 0.28, 0.80), (T + 2.0) / 7.0);
+    else if (T < 12.0) c = mix(vec3(0.10, 0.28, 0.80), vec3(0.10, 0.70, 0.88), (T - 5.0) / 7.0);
+    else if (T < 18.0) c = mix(vec3(0.10, 0.70, 0.88), vec3(0.30, 0.85, 0.35), (T - 12.0) / 6.0);
+    else if (T < 24.0) c = mix(vec3(0.30, 0.85, 0.35), vec3(0.98, 0.86, 0.22), (T - 18.0) / 6.0);
+    else if (T < 28.0) c = mix(vec3(0.98, 0.86, 0.22), vec3(1.00, 0.50, 0.12), (T - 24.0) / 4.0);
+    else               c = mix(vec3(1.00, 0.50, 0.12), vec3(0.85, 0.08, 0.10), clamp((T - 28.0) / 4.0, 0.0, 1.0));
+    return c * c;
 }
 
 // shiftCur / shiftPrev: advection offsets, looked up once per pixel and reused for the shadow sample.
@@ -140,7 +178,7 @@ void main() {
     {
         vec3 m = normalize(ro + rd * (-b));                  // point of closest approach
         float muM = dot(uViewToEcef * m, uSun);
-        float lit = smoothstep(-0.28, 0.30, muM);
+        float lit = uMode == 3 ? 0.12 : uMode == 0 ? smoothstep(-0.28, 0.30, muM) : 0.45;
         float hgt = max(dmin - 1.0, 0.0);
         float fwd = pow(max(dot(rdE, uSun), 0.0), 6.0);      // forward scattering when the Sun is behind
         vec3 tint = mix(vec3(1.0, 0.42, 0.16), vec3(0.30, 0.56, 1.0), smoothstep(-0.12, 0.30, muM));
@@ -166,7 +204,7 @@ void main() {
         float water = tex(uWater, uv).r;
         vec2 shC = flowShift(uFlow, uv, uAdvect);
         vec2 shP = uCloudMix < 0.999 ? flowShift(uFlowPrev, uv, uAdvectPrev) : vec2(0.0);
-        float cl = cloudCover(uv, shC, shP);
+        float cl = uMode == 0 || uMode == 3 ? cloudCover(uv, shC, shP) : 0.0;
 
         // cloud shadow: sample the cloud layer offset toward the Sun
         vec3 east = normalize(vec3(-N.y, N.x, 0.0) + vec3(1e-6, 0.0, 0.0));
@@ -212,6 +250,29 @@ void main() {
         sky += vec3(1.0, 0.45, 0.16) * band * path * path * 0.55;
         surf += sky * 0.55;
 
+        if (uMode == 1 || uMode == 2) {
+            // data views: evenly lit globe so the whole disk reads, dark muted surface underneath
+            float raw = rawData(uv, shC, uMode == 1 ? shP : vec2(0.0)) * 255.0;
+            float grey = dot(albedo, vec3(0.3, 0.5, 0.2));
+            vec3 base = mix(vec3(grey) * 0.22, albedo * 0.10 + vec3(0.004, 0.010, 0.025), water);
+            float rim = pow(1.0 - muV, 2.2);
+            if (uMode == 1) {
+                float T = (raw - 1.0) / 254.0 * 140.0 - 90.0;
+                vec4 ir = irColour(T) * smoothstep(4.0, 9.0, raw);    // 0 = no data
+                surf = mix(base, ir.rgb * 0.95, ir.a);
+            } else {
+                float T = (raw - 1.0) / 254.0 * 37.0 - 2.0;
+                float sea = smoothstep(1.0, 3.0, raw);
+                surf = mix(vec3(grey) * 0.30 + vec3(0.01), sstColour(T) * 0.85, sea);
+            }
+            surf += vec3(0.24, 0.48, 1.0) * rim * 0.20;
+        } else if (uMode == 3) {
+            // night lights: the whole planet as seen at night, weather glowing faintly in infrared
+            float Ln = tex(uLights, uv).r;
+            surf = (vec3(1.0, 0.66, 0.30) * Ln * 2.2 + vec3(1.0, 0.9, 0.7) * Ln * Ln * 2.5) * (1.0 - 0.75 * cl)
+                 + (albedo * 0.006 + vec3(cl * cl) * 0.06) * vec3(0.60, 0.72, 1.0)
+                 + vec3(0.10, 0.20, 0.45) * pow(1.0 - muV, 2.5) * 0.12;
+        }
         col = mix(col, surf, cov);
     }
 

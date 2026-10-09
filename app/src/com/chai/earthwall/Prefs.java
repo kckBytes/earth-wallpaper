@@ -29,6 +29,9 @@ final class Prefs {
     static final String HD_WIFI_ONLY = "hd_wifi_only";
     static final String LIVE_CLOUDS = "live_clouds";   // true: 5-satellite stitch every 10 min (earth-live); false: 3-hourly composite
     static final String CLOUDS_SRC = "clouds_src";
+    static final String VIEW = "view_mode";             // 0 natural, 1 infrared, 2 sea temperature, 3 night lights
+    static final String REPLAY_H = "replay_hours";      // back triple-tap replay length
+    static final int[] REPLAY_CHOICES = {3, 6, 9, 12, 18, 24};
     static final String REFRESH = "refresh_token";
 
     // written by CloudUpdater
@@ -62,10 +65,14 @@ final class Prefs {
         return c.getApplicationContext().getSharedPreferences(NAME, Context.MODE_PRIVATE);
     }
 
+    /** Which data map a view needs: c = clouds, bt = infrared temperature, sst = sea-surface temperature. */
+    static String kind(int view) { return view == 1 ? "bt" : view == 2 ? "sst" : "c"; }
+
     static final class Config {
         City city = HOME_DEFAULT;
         float size = 1f, height = DEF_HEIGHT, gain = DEF_GAIN;
         boolean horizon, motion, parallax = true, marker = true, stars = true;
+        int view = 0, replayH = 12;
     }
 
     static Config read(SharedPreferences p) {
@@ -86,6 +93,8 @@ final class Prefs {
         c.parallax = p.getBoolean(PARALLAX, true);
         c.marker = p.getBoolean(MARKER, true);
         c.stars = p.getBoolean(STARS, true);
+        c.view = p.getInt(VIEW, 0);
+        c.replayH = p.getInt(REPLAY_H, 12);
         return c;
     }
 
