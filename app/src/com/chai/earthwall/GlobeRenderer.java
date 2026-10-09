@@ -31,8 +31,10 @@ final class GlobeRenderer {
     private int prog, vbo;
     private int uRes, uCenter, uRadius, uCamDist, uView, uSun, uGmst, uCloudMix, uFade, uTime,
             uStarShift, uStars, uAdvect, uAdvectPrev, uMarkerPx, uMarkerAmt, uMarkerSize, uPass, uRect, uMode;
-    // replay: frame A (older), frame B (newer), motion A->B. Swapped in for the cloud slots while a replay plays.
-    private final int[] rtex = new int[3];
+    // replay: a ring of three frame textures (A older, B newer, C being filled in slices for the next step)
+    // plus the motion A->B. Swapped in for the cloud slots while a replay plays.
+    private final int[] rtex = new int[4];             // 0..2 frame ring, 3 motion
+    private int ra = 0, rb = 1, rc = 2, rW, rH;
     private int labelProg, uLabRect, uLabAlpha, labelTex = 0, labelW, labelH;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
     private int fbo, fboTex, fboW, fboH;
@@ -87,7 +89,7 @@ final class GlobeRenderer {
         GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, tri.length * 4, fb, GLES20.GL_STATIC_DRAW);
 
         GLES20.glGenTextures(7, tex, 0);
-        GLES20.glGenTextures(3, rtex, 0);
+        GLES20.glGenTextures(4, rtex, 0);
         String ext = GLES20.glGetString(GLES20.GL_EXTENSIONS);
         if (ext != null && ext.contains("GL_EXT_texture_filter_anisotropic")) {
             float[] mx = new float[1];
@@ -150,17 +152,31 @@ final class GlobeRenderer {
         haveClouds = true;
     }
 
-    /** Replay frames: which = 0 (A, older) or 1 (B, newer). */
-    void uploadReplay(int which, Images.Single img) {
-        bind(rtex[which]);
-        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R8, img.w, img.h, 0, GLES30.GL_RED,
-                GLES20.GL_UNSIGNED_BYTE, img.data);
-        finishTexture(true);
+    /**
+     * Replay frames are uploaded in horizontal slices (texSubImage) spread over several display frames,
+     * into the third texture of the ring, so stepping to the next half-hour never stalls drawing.
+     * No mipmaps: the 2048-px frames are about as dense as the globe on screen, so they're never minified much.
+     */
+    void replayBegin(int w, int h) {
+        rW = w; rH = h; ra = 0; rb = 1; rc = 2;
+        for (int i = 0; i < 3; i++) {
+            bind(rtex[i]);
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R8, w, h, 0, GLES30.GL_RED, GLES20.GL_UNSIGNED_BYTE, null);
+            finishTexture(false);
+        }
     }
-    void uploadReplayFlow(ByteBuffer flow) { uploadFlowTo(rtex[2], flow); }
-    /** B becomes A (the texture just swaps roles); B is then refilled with the next frame. */
-    void swapReplay() { int t = rtex[0]; rtex[0] = rtex[1]; rtex[1] = t; }
+    /** Upload rows [y0, y0+rows) of img into ring slot 0 = A, 1 = B, 2 = C (the one being prepared). */
+    void replaySlice(int slot, Images.Single img, int y0, int rows) {
+        int id = rtex[slot == 0 ? ra : slot == 1 ? rb : rc];
+        bind(id);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        ByteBuffer d = img.data.duplicate();
+        d.position(y0 * img.w);
+        GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, y0, img.w, rows, GLES30.GL_RED, GLES20.GL_UNSIGNED_BYTE, d);
+    }
+    void uploadReplayFlow(ByteBuffer flow) { uploadFlowTo(rtex[3], flow); }
+    /** Step: B becomes A, the prepared C becomes B, the old A is free for the next frame. */
+    void rotateReplay() { int t = ra; ra = rb; rb = rc; rc = t; }
 
     private void uploadFlow(int unitTex, ByteBuffer flow) { uploadFlowTo(tex[unitTex], flow); }
 
@@ -230,7 +246,7 @@ final class GlobeRenderer {
         GLES20.glViewport(0, 0, fw, fh);
         GLES20.glUseProgram(prog);
         int[] units = f.replay
-                ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], rtex[1], rtex[0], rtex[2], rtex[2]}
+                ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], rtex[rb], rtex[ra], rtex[3], rtex[3]}
                 : new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], tex[3 + prev], tex[5 + cur], tex[5 + prev]};
         for (int i = 0; i < units.length; i++) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i);
@@ -306,7 +322,7 @@ final class GlobeRenderer {
     void release() {
         if (fbo != 0) { GLES20.glDeleteFramebuffers(1, new int[]{fbo}, 0); GLES20.glDeleteTextures(1, new int[]{fboTex}, 0); fbo = 0; }
         GLES20.glDeleteTextures(7, tex, 0);
-        GLES20.glDeleteTextures(3, rtex, 0);
+        GLES20.glDeleteTextures(4, rtex, 0);
         GLES20.glDeleteBuffers(1, new int[]{vbo}, 0);
         GLES20.glDeleteProgram(prog);
         haveDay = haveLights = haveWater = haveClouds = false;
