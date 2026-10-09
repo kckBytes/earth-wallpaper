@@ -4,6 +4,8 @@ A real-time Earth on the Pixel lock screen: actual sun position, city lights on 
 
 ![Lock screen](docs/lockscreen.png)
 
+**For iPhone and everyone else:** the web version (same globe, same live clouds, control-mode style buttons) is at **https://kckbytes.github.io/earth-web/**. Its source is the public repo [kckBytes/earth-web](https://github.com/kckBytes/earth-web). On iPhone: Safari → Share → Add to Home Screen.
+
 ## What it does
 
 **Globe**
