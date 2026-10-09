@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style></head>
+<body><canvas id="c"></canvas>
+<script>
+// Mirrors the Java side exactly (Astro.java / Camera math / Layout) so this preview is what the phone draws.
+const P = new URLSearchParams(location.search);
+const W = +P.get('w') || 1080, H = +P.get('h') || 2400;
+const utc = P.get('utc') ? Date.parse(P.get('utc')) : Date.now();
+const camLat = +(P.get('lat') ?? 20), camLon = +(P.get('lon') ?? -78.6);
+const comp = P.get('comp') || 'disk', size = +(P.get('size') ?? 1.0);
+const rad = d => d * Math.PI / 180;
+
+function sun(ms) {
+  const d = ms / 86400000 + 2440587.5 - 2451545.0;
+  const g = rad(357.529 + 0.98560028 * d);
+  const q = 280.459 + 0.98564736 * d;
+  const L = rad(q + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g));
+  const e = rad(23.439 - 0.00000036 * d);
+  const ra = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L));
+  const dec = Math.asin(Math.sin(e) * Math.sin(L));
+  let gmst = rad(280.46061837 + 360.98564736629 * d) % (2 * Math.PI); if (gmst < 0) gmst += 2 * Math.PI;
+  const lonS = ra - gmst;
+  return { v: [Math.cos(dec) * Math.cos(lonS), Math.cos(dec) * Math.sin(lonS), Math.sin(dec)], gmst,
+           subLat: dec * 180 / Math.PI, subLon: ((lonS * 180 / Math.PI + 540) % 360) - 180 };
+}
+function viewToEcef(latD, lonD) {
+  const la = rad(latD), lo = rad(lonD);
+  const Z = [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)];
+  let Y = [-Z[2] * Z[0], -Z[2] * Z[1], 1 - Z[2] * Z[2]];
+  const n = Math.hypot(...Y); Y = Y.map(x => x / n);
+  const X = [Y[1] * Z[2] - Y[2] * Z[1], Y[2] * Z[0] - Y[0] * Z[2], Y[0] * Z[1] - Y[1] * Z[0]];
+  return [...X, ...Y, ...Z]; // column-major mat3
+}
+function layout(w, h) {
+  if (comp === 'horizon') { const r = 1.30 * w * size; return { cx: w * 0.5, cy: h * 0.40 - r, r, dist: 1.9 }; }
+  const r = 0.47 * Math.min(w,h) * size; return { cx: w * 0.5, cy: h * (+(P.get('height') ?? 0.30)), r, dist: 6.6 };
+}
+
+async function main() {
+  const cv = document.getElementById('c'); cv.width = W; cv.height = H;
+  const gl = cv.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+  const [vs, fs] = await Promise.all(['globe.vert', 'globe.frag'].map(f => fetch('assets/' + f).then(r => r.text())));
+  const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(pr, 0, 'aPos'); gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+  gl.useProgram(pr);
+  const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 0,1, 1,0, 1,1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+  const load = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+  const texs = [['uDay', 'assets/day.jpg', true], ['uLights', 'assets/lights.jpg'], ['uWater', 'assets/water.jpg'],
+                ['uClouds', 'assets/clouds.jpg'], ['uCloudsPrev', 'assets/clouds.jpg']];
+  for (let i = 0; i < texs.length; i++) {
+    const [name, src, rgb] = texs[i]; const img = await load(src);
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (rgb) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gl.RED, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, 8);
+    gl.uniform1i(gl.getUniformLocation(pr, name), i);
+  }
+  // neutral flow (no motion) on units 5,6
+  for (const [i, name] of [[5, 'uFlow'], [6, 'uFlowPrev']]) {
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, 1, 1, 0, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array([128, 128]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.uniform1i(gl.getUniformLocation(pr, name), i);
+  }
+  const s = sun(utc), L = layout(W, H), u = n => gl.getUniformLocation(pr, n);
+  gl.uniform1f(u('uAdvect'), 0); gl.uniform1f(u('uAdvectPrev'), 0);
+  // marker: project city into screen space (same math as Java)
+  const mk = P.get('mlat'); gl.uniform1f(u('uMarkerAmt'), 0);
+  if (mk !== null) {
+    const M = viewToEcef(camLat, camLon), la = rad(+mk), lo = rad(+P.get('mlon'));
+    const e = [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)];
+    const v = [0, 1, 2].map(c => M[c * 3] * e[0] + M[c * 3 + 1] * e[1] + M[c * 3 + 2] * e[2]);
+    const tanA = 1 / Math.sqrt(L.dist * L.dist - 1), dz = L.dist - v[2];
+    if (v[2] * L.dist > 1.02) {
+      gl.uniform2f(u('uMarkerPx'), L.cx + v[0] / dz / tanA * L.r, L.cy + v[1] / dz / tanA * L.r);
+      gl.uniform1f(u('uMarkerAmt'), 0.8); gl.uniform1f(u('uMarkerSize'), 7);
+    }
+  }
+  gl.uniform2f(u('uRes'), W, H); gl.uniform2f(u('uCenter'), L.cx, L.cy); gl.uniform1f(u('uRadius'), L.r);
+  gl.uniform1f(u('uCamDist'), L.dist);
+  gl.uniformMatrix3fv(u('uViewToEcef'), false, new Float32Array(viewToEcef(camLat, camLon)));
+  gl.uniform3fv(u('uSun'), s.v); gl.uniform1f(u('uGmst'), s.gmst); gl.uniform1f(u('uCloudMix'), 1);
+  gl.uniform1f(u('uFade'), +(P.get('fade') ?? 1)); gl.uniform1f(u('uTime'), 3.7); gl.uniform2f(u('uStarShift'), 0, 0);
+  gl.uniform1f(u('uStars'), 1);
+  gl.viewport(0, 0, W, H);
+  const passes = P.get('single') ? [[1, -1, -1, 1, 1]] : (() => {
+    const m = L.r * 1.12, cl = v => Math.max(-1, Math.min(1, v));
+    return [[0, -1, -1, 1, 1], [1, cl((L.cx - m) / W * 2 - 1), cl((L.cy - m) / H * 2 - 1), cl((L.cx + m) / W * 2 - 1), cl((L.cy + m) / H * 2 - 1)]];
+  })();
+  for (const [pass, x0, y0, x1, y1] of passes) {
+    gl.uniform1i(u('uPass'), pass); gl.uniform4f(u('uRect'), x0, y0, x1, y1);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+  gl.finish();
+  document.title = 'done ' + JSON.stringify({ subLat: s.subLat.toFixed(2), subLon: s.subLon.toFixed(2) });
+}
+main().catch(e => { document.title = 'error ' + e.message; });
+</script></body></html>

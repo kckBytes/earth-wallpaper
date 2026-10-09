@@ -1,0 +1,18 @@
+# build outputs
+build/
+*.apk
+*.idsig
+*.log
+
+# signing key: keep a private backup, never commit
+*.keystore
+*.jks
+
+# scratch / test captures / file drops
+incoming/
+emu/
+phone/
+shot_*.png
+
+# source textures (re-download with tools/fetch_textures.py)
+raw/
