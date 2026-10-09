@@ -58,7 +58,10 @@ final class ReplayStore {
                 byte[] b = CloudUpdater.download(CloudUpdater.LIVE_URL + "frames/" + t + suffix(kind), 60_000);
                 write(img, b); fetched++; kb += b.length / 1024;
             }
-            if (!fl.exists() || fl.length() < 50) {
+            // a frame that arrives later (backfilled into a gap) changes the motion of the frame before it
+            File nextImg = i + 1 < want.size() ? new File(d, want.get(i + 1) + suffix(kind)) : null;
+            boolean stale = nextImg != null && nextImg.exists() && fl.exists() && fl.lastModified() < nextImg.lastModified();
+            if (!fl.exists() || fl.length() < 50 || stale) {
                 byte[] b = CloudUpdater.download(CloudUpdater.LIVE_URL + "frames/" + t + "_f.png", 20_000);
                 write(fl, b);
             }
