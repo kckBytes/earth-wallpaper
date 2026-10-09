@@ -37,6 +37,16 @@ The Earth app grows into one app for the phone's whole look. Earth becomes a *fe
 
 Note: phase 1 replaces Magic Portrait on the home screen only when the user chooses to.
 
+## Next: real 24-hour replay (agreed 2026-10-09)
+- **Server (earth-live):** keep the last 24 h of stitched frames, one every 30 min, backfilled from the satellite archives. Publish each frame at 2048×1024 (~0.4 MB) with the motion field to the next frame, plus a `frames.json` index.
+- **Phone:** download only the frames it doesn't have yet (in steady state, one new frame every 30 min, ~20 MB/day on Wi-Fi). Keep them on disk.
+- **Playback:** triple-tap (and optionally wake) plays the real past N hours.
+  - Two texture slots, crossfading between consecutive frames, each slid along its motion field so the replay is smooth.
+  - Frames are decoded on a background thread just ahead of playback, so GPU memory stays the same as today.
+- **Setting:** replay length 3 / 6 / 9 / 12 / 18 / 24 h. It only chooses how many stored frames to play. The server work is identical for everyone, and phone storage is at most 24 h of frames.
+- **Playback time** grows gently with length (≈3 s for 3 h to ≈10 s for 24 h).
+- **Golden rule:** this lands on `main` only after it runs well. Non-Earth work (Sets/Modes) stays on the `sets` branch.
+
 ## Earth wallpaper — open items
 - [ ] Confirm cloud motion is non-zero after the next real satellite update. Log line: `cloud motion estimated … mean X deg/h`.
 - [ ] Back taps: confirm walking never triggers a zoom.
