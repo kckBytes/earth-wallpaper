@@ -38,6 +38,9 @@ final class CloudUpdater {
 
     private static final String TAG = "EarthWall";
     private static final String URL_FMT = "https://clouds.matteason.co.uk/images/%s/clouds.jpg";
+    /** Live source: five geostationary satellites stitched every 10 min by github.com/kckBytes/earth-live. */
+    private static final String LIVE_BASE = "https://kckbytes.github.io/earth-live/";
+    private static final long LIVE_INTERVAL = 10 * 60_000L, LIVE_METERED_INTERVAL = 30 * 60_000L;
     static final long CHECK_INTERVAL = 30 * 60_000L;
     private static final long METERED_INTERVAL = 3 * 3600_000L;
 
@@ -50,11 +53,25 @@ final class CloudUpdater {
 
     private static File cur(Context c) { return new File(c.getFilesDir(), "clouds.jpg"); }
     private static File prev(Context c) { return new File(c.getFilesDir(), "clouds_prev.jpg"); }
+    private static File liveFlow(Context c) { return new File(c.getFilesDir(), "flow_live.bin"); }
+    static boolean live(SharedPreferences p) { return p.getBoolean(Prefs.LIVE_CLOUDS, true); }
 
     /** Latest map with its motion field (cache, else the bundled snapshot). Blocking; off the GL thread. */
     static CloudFrame loadInitial(Context c) throws Exception {
         SharedPreferences p = Prefs.get(c);
         File f = cur(c);
+        if (live(p) && "live".equals(p.getString(Prefs.CLOUDS_SRC, "")) && f.length() > 10_000 && liveFlow(c).length() == FlowEstimator.GW * FlowEstimator.GH * 2) {
+            try {
+                Images.Single now = Images.decodeSingle(new FileInputStream(f));
+                byte[] fb = java.nio.file.Files.readAllBytes(liveFlow(c).toPath());
+                ByteBuffer flow = ByteBuffer.allocateDirect(fb.length).order(java.nio.ByteOrder.nativeOrder());
+                flow.put(fb).position(0);
+                long t = p.getLong(Prefs.CLOUDS_TIME, System.currentTimeMillis());
+                Log.i(TAG, "live clouds from cache: observed " + String.format(java.util.Locale.US, "%.0f", (System.currentTimeMillis() - t) / 60_000.0)
+                        + " min ago, motion " + FlowEstimator.stats(flow));
+                return new CloudFrame(now, flow, t);
+            } catch (Exception e) { Log.w(TAG, "cached live clouds unreadable", e); }
+        }
         if (f.length() > 10_000) {
             try {
                 Images.Single now = Images.decodeSingle(new FileInputStream(f));
@@ -85,12 +102,12 @@ final class CloudUpdater {
         if (net == null) return;
         final boolean metered = cm.isActiveNetworkMetered();
         long now = System.currentTimeMillis();
-        long interval = metered ? METERED_INTERVAL : CHECK_INTERVAL;
+        long interval = live(p) ? (metered ? LIVE_METERED_INTERVAL : LIVE_INTERVAL) : (metered ? METERED_INTERVAL : CHECK_INTERVAL);
         if (!force && now - p.getLong(Prefs.CLOUDS_CHECKED, 0) < interval) return;
         if (busy) return;
         busy = true;
         io.execute(() -> {
-            try { fetch(c, p, metered, force); }
+            try { if (live(p)) fetchLive(c, p, metered, force); else fetch(c, p, metered, force); }
             catch (Exception e) { Log.w(TAG, "cloud update failed", e); }
             finally { busy = false; }
         });
@@ -105,6 +122,65 @@ final class CloudUpdater {
             sum += Math.abs(va - vb); n++;
         }
         return sum / (float) n;
+    }
+
+    private static byte[] download(String url, int timeoutMs) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setConnectTimeout(15_000);
+        conn.setReadTimeout(timeoutMs);
+        conn.setUseCaches(false);
+        conn.setRequestProperty("Cache-Control", "no-cache");
+        conn.setRequestProperty("User-Agent", "EarthWallpaper/1.2 (Android live wallpaper)");
+        try {
+            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) throw new IllegalStateException("HTTP " + conn.getResponseCode() + " " + url);
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buf = new byte[64 * 1024]; int n;
+                while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            }
+            return bo.toByteArray();
+        } finally { conn.disconnect(); }
+    }
+
+    /**
+     * Live source: meta.json (~0.5 KB) says when the newest stitched map was observed. Only a newer map is
+     * downloaded, together with its motion field measured on the server against the map ~1 h earlier.
+     * The map's time is the real observation time, so the clouds drift forward from that moment to now.
+     */
+    private static void fetchLive(Context c, SharedPreferences p, boolean metered, boolean force) throws Exception {
+        long now = System.currentTimeMillis();
+        org.json.JSONObject meta = new org.json.JSONObject(new String(download(LIVE_BASE + "meta.json?t=" + now, 20_000), "UTF-8"));
+        long obs = meta.getLong("time");
+        String res = (metered && p.getBoolean(Prefs.HD_WIFI_ONLY, true)) ? "2048" : "4096";
+        boolean have = "live".equals(p.getString(Prefs.CLOUDS_SRC, "")) && cur(c).length() > 10_000
+                && res.equals(p.getString(Prefs.CLOUDS_RES, ""));
+        if (!force && have && obs <= p.getLong(Prefs.CLOUDS_TIME, 0)) {
+            p.edit().putLong(Prefs.CLOUDS_CHECKED, now).apply();
+            return;
+        }
+        byte[] jpg = download(LIVE_BASE + "clouds_" + res + ".jpg?t=" + obs, 90_000);
+        byte[] png = download(LIVE_BASE + "flow.png?t=" + obs, 20_000);
+        Images.Single fresh = Images.decodeSingle(new java.io.ByteArrayInputStream(jpg));     // validate first
+        android.graphics.Bitmap fb = android.graphics.BitmapFactory.decodeByteArray(png, 0, png.length);
+        int gw = FlowEstimator.GW, gh = FlowEstimator.GH;
+        if (fb == null || fb.getWidth() != gw || fb.getHeight() != gh) throw new IllegalStateException("bad flow.png");
+        int[] px = new int[gw * gh];
+        fb.getPixels(px, 0, gw, 0, 0, gw, gh);
+        byte[] rg = new byte[gw * gh * 2];
+        for (int i = 0; i < px.length; i++) { rg[2 * i] = (byte) ((px[i] >> 16) & 0xFF); rg[2 * i + 1] = (byte) ((px[i] >> 8) & 0xFF); }
+        File tmp = new File(c.getFilesDir(), "clouds.tmp");
+        try (OutputStream out = new FileOutputStream(tmp)) { out.write(jpg); }
+        File curFile = cur(c);
+        if (!tmp.renameTo(curFile)) { curFile.delete(); if (!tmp.renameTo(curFile)) throw new IllegalStateException("rename failed"); }
+        try (OutputStream out = new FileOutputStream(liveFlow(c))) { out.write(rg); }
+        p.edit().putLong(Prefs.CLOUDS_CHECKED, now).putLong(Prefs.CLOUDS_TIME, obs).putString(Prefs.CLOUDS_RES, res)
+                .putString(Prefs.CLOUDS_SRC, "live").remove(Prefs.CLOUDS_ETAG).apply();
+        ByteBuffer flow = ByteBuffer.allocateDirect(rg.length).order(java.nio.ByteOrder.nativeOrder());
+        flow.put(rg).position(0);
+        Log.i(TAG, "live clouds " + res + " observed " + String.format(java.util.Locale.US, "%.0f", (now - obs) / 60_000.0)
+                + " min ago (" + jpg.length / 1024 + " KB), motion " + FlowEstimator.stats(flow));
+        CloudFrame f = new CloudFrame(fresh, flow, obs);
+        for (Sink s : sinks) s.onClouds(f);
     }
 
     private static void fetch(Context c, SharedPreferences p, boolean metered, boolean force) throws Exception {
@@ -189,7 +265,8 @@ final class CloudUpdater {
                 .putLong(Prefs.CLOUDS_CHECKED, now)
                 .putLong(Prefs.CLOUDS_TIME, newTime)
                 .putString(Prefs.CLOUDS_ETAG, newTag)
-                .putString(Prefs.CLOUDS_RES, res);
+                .putString(Prefs.CLOUDS_RES, res)
+                .putString(Prefs.CLOUDS_SRC, "classic");
         if (prevTime > 0) e.putLong(Prefs.CLOUDS_PREV_TIME, prevTime);
         e.apply();
         Log.i(TAG, "clouds updated " + res + " map time " + newTime);

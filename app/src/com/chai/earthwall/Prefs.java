@@ -27,6 +27,8 @@ final class Prefs {
     static final String KNOCK = "knock_zoom";
     static final String STARS = "stars";
     static final String HD_WIFI_ONLY = "hd_wifi_only";
+    static final String LIVE_CLOUDS = "live_clouds";   // true: 5-satellite stitch every 10 min (earth-live); false: 3-hourly composite
+    static final String CLOUDS_SRC = "clouds_src";
     static final String REFRESH = "refresh_token";
 
     // written by CloudUpdater

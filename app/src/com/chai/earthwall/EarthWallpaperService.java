@@ -140,7 +140,7 @@ public class EarthWallpaperService extends WallpaperService {
         }
 
         @Override public void onSharedPreferenceChanged(SharedPreferences p, String key) {
-            if (Prefs.REFRESH.equals(key)) { CloudUpdater.maybeUpdate(EarthWallpaperService.this, true); return; }
+            if (Prefs.REFRESH.equals(key) || Prefs.LIVE_CLOUDS.equals(key)) { CloudUpdater.maybeUpdate(EarthWallpaperService.this, true); return; }
             if (key != null && (key.startsWith("clouds_") || key.equals(Prefs.PRESETS))) return;
             applyPrefs();
         }
