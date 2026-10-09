@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wallpaper xmlns:android="http://schemas.android.com/apk/res/android"
+    android:thumbnail="@drawable/thumb"
+    android:author="@string/wp_author"
+    android:description="@string/wp_desc"
+    android:settingsActivity="com.chai.earthwall.SettingsActivity"
+    android:showMetadataInPreview="true" />
