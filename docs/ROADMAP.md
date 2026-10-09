@@ -44,6 +44,12 @@ Note: phase 1 replaces Magic Portrait on the home screen only when the user choo
 - [ ] Optional: faster live satellite source (NASA GIBS GOES-East/West + Himawari, ~40 min latency, free).
 - [ ] Cleanup: remove unused `JoystickView`, `ZoomTapActivity`, the weather code in `ExploreActivity`, and the verbose knock logs.
 
+## Web version (done)
+- https://kckbytes.github.io/earth-web/ (public repo kckBytes/earth-web, served by GitHub Pages).
+- The same `globe.frag`; `flow.js` is a port of `FlowEstimator`.
+- The browser keeps the last two distinct cloud maps for motion.
+- Controls match control mode. Cities can be added by name or by location.
+
 ## Other ideas on the list
 - **Phone ↔ PC from anywhere:** Tailscale (free personal tier) as the private network; scrcpy (4.x virtual displays: each phone app in its own Windows window) for PC→phone; Windows OpenSSH for a phone→PC terminal that can open PC apps; notifications as Windows toasts with reply; shared clipboard; file drag-and-drop.
 - **Link dashboard app:** give a list of links and each becomes a self-updating card.
