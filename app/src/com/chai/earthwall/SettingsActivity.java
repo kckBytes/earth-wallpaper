@@ -129,6 +129,7 @@ public class SettingsActivity extends Activity {
         toggle("Stars", Prefs.STARS, true);
 
         header("Clouds");
+        toggle("Live clouds: 5 satellites, new map every 10 min (off = 3-hourly map)", Prefs.LIVE_CLOUDS, true);
         toggle("Full-resolution clouds on Wi-Fi only", Prefs.HD_WIFI_ONLY, true);
         Button refresh = new Button(this);
         refresh.setText("Refresh clouds now");
