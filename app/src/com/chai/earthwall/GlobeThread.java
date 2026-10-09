@@ -205,18 +205,24 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private final class ReplayPlayer {
         final long[] t; final String kind; final double durS;
         final java.util.concurrent.LinkedBlockingQueue<Object[]> q = new java.util.concurrent.LinkedBlockingQueue<>(3);
+        final java.nio.ByteBuffer[] flows;
         volatile boolean cancelled;
         int a = -1;                 // index of the frame in texture A (B holds a + 1)
         double pos;                 // 0 .. n-1
         long lastNs, startNs;
+        Images.Single prep;         // frame a + 2, being uploaded into C in slices
+        int prepIdx = -1, prepRow;
+        static final int ROWS_PER_FRAME = 128;
         ReplayPlayer(java.util.List<Long> ts, String kind, double durS) {
             t = new long[ts.size()];
             for (int i = 0; i < t.length; i++) t[i] = ts.get(i);
+            flows = new java.nio.ByteBuffer[t.length];
             this.kind = kind; this.durS = durS; startNs = System.nanoTime();
             replayLoader.execute(() -> {                                  // decode ahead, at most 3 frames in memory
                 for (int i = 0; i < t.length && !cancelled; i++) {
                     try {
-                        Object[] item = {i, ReplayStore.loadImage(ctx, t[i], kind), ReplayStore.loadFlow(ctx, t[i])};
+                        flows[i] = ReplayStore.loadFlow(ctx, t[i]);
+                        Object[] item = {i, ReplayStore.loadImage(ctx, t[i], kind)};
                         while (!cancelled && !q.offer(item, 100, TimeUnit.MILLISECONDS)) { }
                     } catch (Exception e) { android.util.Log.w("EarthWall", "replay frame " + i + " unreadable", e); cancelled = true; }
                 }
@@ -227,25 +233,34 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             if (cancelled) return false;
             if (a < 0) {                                                  // need frames 0 and 1 to begin
                 if (q.size() < 2) return now - startNs < 4_000_000_000L;
-                Object[] f0 = q.poll(), f1 = q.poll();
-                r.uploadReplay(0, (Images.Single) f0[1]);
-                r.uploadReplay(1, (Images.Single) f1[1]);
-                r.uploadReplayFlow((java.nio.ByteBuffer) f0[2]);
+                Images.Single f0 = (Images.Single) q.poll()[1], f1 = (Images.Single) q.poll()[1];
+                r.replayBegin(f0.w, f0.h);
+                r.replaySlice(0, f0, 0, f0.h);
+                r.replaySlice(1, f1, 0, f1.h);
+                r.uploadReplayFlow(flows[0]);
                 a = 0; pos = 0; lastNs = now;
                 return true;
+            }
+            // keep preparing frame a + 2 in slices, a few rows per display frame
+            if (prep == null && a + 2 < t.length) {
+                Object[] nx = q.poll();
+                if (nx != null) { prep = (Images.Single) nx[1]; prepIdx = (Integer) nx[0]; prepRow = 0; }
+            }
+            if (prep != null && prepRow < prep.h) {
+                int rows = Math.min(ROWS_PER_FRAME, prep.h - prepRow);
+                r.replaySlice(2, prep, prepRow, rows);
+                prepRow += rows;
             }
             double dt = Math.min((now - lastNs) / 1e9, 0.05); lastNs = now;
             pos += dt * (t.length - 1) / durS;
             if (pos >= t.length - 1) return false;
-            while (pos >= a + 1) {                                        // move to the next pair
-                if (a + 2 >= t.length) return false;
-                Object[] nx = q.poll();
-                if (nx == null) { pos = a + 0.999; break; }               // decoder behind: hold for a moment
-                r.swapReplay();
-                r.uploadReplay(1, (Images.Single) nx[1]);
-                // motion for the new pair (a+1 -> a+2) is the flow stored with frame a+1
-                r.uploadReplayFlow(ReplayStore.loadFlow(ctx, t[a + 1]));
+            if (pos >= a + 1) {                                           // step to the next pair
+                boolean ready = prep != null && prepIdx == a + 2 && prepRow >= prep.h;
+                if (!ready) { pos = a + 0.999; return true; }              // next frame not in yet: hold briefly
+                r.rotateReplay();
                 a++;
+                r.uploadReplayFlow(flows[a] != null ? flows[a] : FlowEstimator.still());
+                prep = null; prepIdx = -1;
             }
             return true;
         }
