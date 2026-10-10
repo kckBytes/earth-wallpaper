@@ -56,6 +56,8 @@ final class GlobeRenderer {
         long nowMs, cloudNowMs;           // cloudNowMs: clock for cloud motion (runs behind during a time-lapse)
         int mode;                         // shader view: 0 natural, 1 infrared, 2 sea temperature, 3 night lights
         boolean replay;                   // draw the replay pair instead of the live slots
+        boolean tail;                     // just after a replay: crossfade its last frame into the live map
+        float tailMix, tailHours;         // 0..1 toward live; hours from that last frame to now
         float replayMix, replayHours;     // position between frame A and B (0..1), hours between them
         final float[] view = new float[9], sun = new float[3];
     }
@@ -293,6 +295,8 @@ final class GlobeRenderer {
         GLES20.glUseProgram(prog);
         int[] units = f.replay
                 ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], rtex[rb], rtex[ra], rtex[3], rtex[3]}
+                : f.tail
+                ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], rtex[rb], tex[5 + cur], rtex[3]}
                 : new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], tex[3 + prev], tex[5 + cur], tex[5 + prev]};
         for (int i = 0; i < units.length; i++) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i);
@@ -305,7 +309,7 @@ final class GlobeRenderer {
         GLES20.glUniformMatrix3fv(uView, 1, false, f.view, 0);
         GLES20.glUniform3f(uSun, f.sun[0], f.sun[1], f.sun[2]);
         GLES20.glUniform1f(uGmst, f.gmst);
-        GLES20.glUniform1f(uCloudMix, f.replay ? f.replayMix : f.cloudMix);
+        GLES20.glUniform1f(uCloudMix, f.replay ? f.replayMix : f.tail ? f.tailMix : f.cloudMix);
         GLES30.glUniform1i(uMode, f.mode);
         GLES20.glUniform1f(uFade, f.fade);
         GLES20.glUniform1f(uTime, f.time);
@@ -314,6 +318,9 @@ final class GlobeRenderer {
         if (f.replay) {          // morph A -> B: A drifts forward along the motion, B comes back from where it was
             GLES20.glUniform1f(uAdvect, -(1f - f.replayMix) * f.replayHours);
             GLES20.glUniform1f(uAdvectPrev, f.replayMix * f.replayHours);
+        } else if (f.tail) {     // the replay's last frame keeps drifting forward while the live map fades in
+            GLES20.glUniform1f(uAdvect, hoursSince(slotTime[cur], f.cloudNowMs));
+            GLES20.glUniform1f(uAdvectPrev, f.tailHours);
         } else {
             GLES20.glUniform1f(uAdvect, hoursSince(slotTime[cur], f.cloudNowMs));
             GLES20.glUniform1f(uAdvectPrev, hoursSince(slotTime[prev], f.cloudNowMs));

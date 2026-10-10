@@ -149,7 +149,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     }
 
     /** Screen went to sleep: next wake starts from home, full globe. */
-    void onSleep() { h.post(() -> { asleep = true; }); }
+    void onSleep() { h.post(() -> { asleep = true; prepareWake(); }); }
 
     /** Screen woke: play the spin-in (the "wakingup" wallpaper command arrives before visibility). */
     void onWake() { h.post(() -> { if (mode == MODE_WALLPAPER && asleep) startWake(true); }); }
@@ -166,7 +166,15 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             wakeNs = System.nanoTime();
             camLat = lat; camLon = cfg.city.lon + 12.0; camZoom = 1;
             tweenTo(lat, cfg.city.lon, 1, 2300, EASE_OUT_QUINT);
-            lapseNs = wakeNs;                                  // clouds replay the last 3 h meanwhile
+            // clouds play the real last 6 h (frames decoded while the screen was off), ending in the live map;
+            // without frames on the phone, fall back to running the live map's motion briefly backward
+            WakePrep wp = wakePrep;
+            wakePrep = null;
+            if (wp != null && replay == null && wp.kind.equals(dataKind)) {
+                replay = new ReplayPlayer(wp.ts, wp.kind, WAKE_S, stepWeights(wp.ts), wp);
+                tailNs = 0; lapseNs = 0;
+                Log.i(TAG, "wake replay: " + wp.ts.size() + " frames");
+            } else lapseNs = wakeNs;
         } else {
             wakeNs = System.nanoTime() - 10_000_000_000L;
             camLat = lat; camLon = cfg.city.lon; camZoom = 1; twEase = 0;
@@ -175,7 +183,30 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     }
 
     // ---- cloud time-lapse: replay the last LAPSE_H hours of cloud motion, easing into real time
-    private static final double LAPSE_H = 12.0, LAPSE_S = 3.0;
+    private static final double LAPSE_H = 3.0, LAPSE_S = 2.6;
+    private static final double WAKE_H = 6.0, WAKE_S = 2.8;       // power-button wake: the real last 6 h in 2.8 s
+
+    /** The first two frames of the wake replay, decoded while the screen is off so the wake starts instantly. */
+    private static final class WakePrep {
+        java.util.List<Long> ts; String kind; Images.Single f0, f1; java.nio.ByteBuffer fl0, fl1;
+    }
+    private WakePrep wakePrep;
+    private void prepareWake() {
+        wakePrep = null;
+        final String kind = dataKind;
+        if (mode != MODE_WALLPAPER || kind.equals("sst")) return;
+        replayLoader.execute(() -> {
+            try {
+                java.util.List<Long> ts = ReplayStore.available(ctx, kind, (int) WAKE_H);
+                if (ts.size() < 2) return;
+                WakePrep p = new WakePrep();
+                p.ts = ts; p.kind = kind;
+                p.f0 = ReplayStore.loadImage(ctx, ts.get(0), kind); p.f1 = ReplayStore.loadImage(ctx, ts.get(1), kind);
+                p.fl0 = ReplayStore.loadFlow(ctx, ts.get(0)); p.fl1 = ReplayStore.loadFlow(ctx, ts.get(1));
+                h.post(() -> { if (asleep) wakePrep = p; });
+            } catch (Exception e) { Log.w(TAG, "wake replay prep failed", e); }
+        });
+    }
     private long lapseNs;
     /** Back triple-tap: play the cloud time-lapse again. */
     /** Back triple-tap: replay the real past hours if the frames are on the phone, else the estimated time-lapse. */
@@ -185,7 +216,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             int hours = cfg.replayH;
             java.util.List<Long> ts = dataKind.equals("sst") ? new java.util.ArrayList<>() : ReplayStore.available(ctx, dataKind, hours);
             if (ts.size() >= 2) {
-                replay = new ReplayPlayer(ts, dataKind, 2.2 + hours * 0.33, stepWeights(ts));
+                tailNs = 0;
+                replay = new ReplayPlayer(ts, dataKind, 2.2 + hours * 0.33, stepWeights(ts), null);
                 android.util.Log.i("EarthWall", "replay start: " + ts.size() + " frames, " + hours + " h");
                 if (glOk) r.setLabel(makeLabel("Last " + hours + " h"));
                 labelStartNs = System.nanoTime();
@@ -252,7 +284,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         Images.Single prep;         // frame a + 2, being uploaded into C in slices
         int prepIdx = -1, prepRow;
         static final int ROWS_PER_FRAME = 256;
-        ReplayPlayer(java.util.List<Long> ts, String kind, double durS, double[] weights) {
+        ReplayPlayer(java.util.List<Long> ts, String kind, double durS, double[] weights, WakePrep pre) {
             t = new long[ts.size()];
             for (int i = 0; i < t.length; i++) t[i] = ts.get(i);
             stepS = new double[Math.max(1, t.length - 1)];
@@ -262,8 +294,13 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 stepS[i] = Math.max(0.09, durS * (weights != null && i < weights.length ? weights[i] : 1.0) / sum);
             flows = new java.nio.ByteBuffer[t.length];
             this.kind = kind; this.durS = durS; startNs = System.nanoTime();
+            final int first = pre != null ? 2 : 0;
+            if (pre != null) {                                            // already decoded while the screen was off
+                flows[0] = pre.fl0; flows[1] = pre.fl1;
+                q.offer(new Object[]{0, pre.f0}); q.offer(new Object[]{1, pre.f1});
+            }
             replayLoader.execute(() -> {                                  // decode ahead, at most 3 frames in memory
-                for (int i = 0; i < t.length && !cancelled; i++) {
+                for (int i = first; i < t.length && !cancelled; i++) {
                     try {
                         flows[i] = ReplayStore.loadFlow(ctx, t[i]);
                         Object[] item = {i, ReplayStore.loadImage(ctx, t[i], kind)};
@@ -314,12 +351,17 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         long timeMs() { return a < 0 ? t[0] : a + 1 < t.length ? (long) (t[a] + mix() * (t[a + 1] - t[a])) : t[t.length - 1]; }
     }
 
+    private long tailNs, tailT;
+    private static final double TAIL_S = 0.9;
+
     private void stepReplay(long now) {
         if (replay == null) { fr.replay = false; return; }
         boolean go = replay.step(now);
         if (!go) {
+            boolean played = replay.a >= 0;
+            long last = replay.t[replay.t.length - 1];
             replay.cancelled = true; replay = null; fr.replay = false;
-            cloudFadeNs = System.nanoTime();                              // ease from the replay back into the live map
+            if (played) { tailNs = now; tailT = last; }                    // fade from its last frame into the live map
             return;
         }
         fr.replay = replay.a >= 0;
@@ -668,7 +710,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         float cloudMix = cloudFadeNs == 0 ? 1f : Math.min(1f, (frameNs - cloudFadeNs) / 3.0e9f);
         lapseOffsetMs(frameNs);                                         // ends the time-lapse when due
         stepReplay(frameNs);
-        boolean animating = replay != null || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || wake < 1f || readyFade < 1f || cloudMix < 1f
+        boolean animating = replay != null || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || wake < 1f || readyFade < 1f || cloudMix < 1f
                 || labelStartNs != 0
                 || Math.abs(zoomOut - zoomOutTarget) > 1e-3f || Math.abs(home - homeTarget) > 1e-3f;
         // Hand tremor alone moves the parallax by far less than a pixel: ignore it (deadband).
@@ -737,6 +779,16 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         fr.time = (float) (t % 3600.0);
         fr.starDx = parX * -260f * pixelScale; fr.starDy = parY * 260f * pixelScale;
         fr.stars = cfg.stars;
+        fr.tail = false;
+        if (tailNs != 0 && replay == null) {
+            double m = (frameNs - tailNs) / (TAIL_S * 1e9);
+            if (m >= 1) tailNs = 0;
+            else {
+                fr.tail = true;
+                fr.tailMix = (float) (m * m * (3 - 2 * m));
+                fr.tailHours = (float) Math.max(0, Math.min(3, (fr.cloudNowMs - tailT) / 3.6e6));
+            }
+        }
         projectMarker(dist, cx, cy, radius);
         maybeLoadStorms(frameNs);
         projectStorms(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, dist, cx, cy, radius);
