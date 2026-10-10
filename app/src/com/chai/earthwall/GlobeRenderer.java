@@ -36,7 +36,7 @@ final class GlobeRenderer {
     private final int[] rtex = new int[4];             // 0..2 frame ring, 3 motion
     private int ra = 0, rb = 1, rc = 2, rW, rH;
     private int labelProg, uLabRect, uLabAlpha, labelTex = 0, labelW, labelH;
-    static final int MAX_STORMS = 8;
+    static final int MAX_STORMS = 32;
     private final int[] stormTex = new int[MAX_STORMS];
     private final float[] stormW = new float[MAX_STORMS], stormH = new float[MAX_STORMS],
             stormAx = new float[MAX_STORMS], stormAy = new float[MAX_STORMS];
