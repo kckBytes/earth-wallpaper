@@ -96,6 +96,15 @@ public class SettingsActivity extends Activity {
         control.setText("Open control mode");
         control.setOnClickListener(v -> startActivity(new Intent(this, ExploreActivity.class)));
         col.addView(control, lp(dp(4)));
+        Button vent = new Button(this);
+        vent.setText("Open Ventusky here (wind, rain, temperature)");
+        vent.setOnClickListener(v -> {                         // their live site, centred on the home city
+            Prefs.City h = Prefs.home(Prefs.get(this));
+            String url = String.format(java.util.Locale.US, "https://www.ventusky.com/?p=%.2f;%.2f;5", h.lat, h.lon);
+            try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
+            catch (Exception e) { android.widget.Toast.makeText(this, "No browser found", android.widget.Toast.LENGTH_SHORT).show(); }
+        });
+        col.addView(vent, lp(dp(4)));
         TextView qsHint = text("Tip: add the \u201CEarth\u201D Quick Settings tile (swipe down twice \u2192 pencil) to open "
                 + "control mode straight from the lock screen, no unlock.", 12, false);
         qsHint.setAlpha(0.6f);
