@@ -22,6 +22,7 @@ final class Prefs {
     static final String PARALLAX = "parallax";
     static final String PARALLAX_GAIN = "parallax_gain";
     static final String MARKER = "marker";
+    static final String STORMS = "storm_labels";
     static final String TWIST = "twist";
     static final String FLIP = "flip";
     static final String KNOCK = "knock_zoom";
@@ -71,7 +72,7 @@ final class Prefs {
     static final class Config {
         City city = HOME_DEFAULT;
         float size = 1f, height = DEF_HEIGHT, gain = DEF_GAIN;
-        boolean horizon, motion, parallax = true, marker = true, stars = true;
+        boolean horizon, motion, parallax = true, marker = true, stars = true, storms = true;
         int view = 0, replayH = 12;
     }
 
@@ -92,6 +93,7 @@ final class Prefs {
         c.motion = p.getBoolean(MOTION, false);
         c.parallax = p.getBoolean(PARALLAX, true);
         c.marker = p.getBoolean(MARKER, true);
+        c.storms = p.getBoolean(STORMS, true);
         c.stars = p.getBoolean(STARS, true);
         c.view = p.getInt(VIEW, 0);
         c.replayH = p.getInt(REPLAY_H, 12);

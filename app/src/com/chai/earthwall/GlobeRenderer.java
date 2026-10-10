@@ -36,6 +36,11 @@ final class GlobeRenderer {
     private final int[] rtex = new int[4];             // 0..2 frame ring, 3 motion
     private int ra = 0, rb = 1, rc = 2, rW, rH;
     private int labelProg, uLabRect, uLabAlpha, labelTex = 0, labelW, labelH;
+    static final int MAX_STORMS = 8;
+    private final int[] stormTex = new int[MAX_STORMS];
+    private final float[] stormW = new float[MAX_STORMS], stormH = new float[MAX_STORMS],
+            stormAx = new float[MAX_STORMS], stormAy = new float[MAX_STORMS];
+    private int stormTexN;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
     private int fbo, fboTex, fboW, fboH;
 
@@ -45,6 +50,8 @@ final class GlobeRenderer {
         float cx, cy, radius, camDist, gmst, cloudMix, fade, time, starDx, starDy;
         float markerX, markerY, markerAmt, markerSize;
         float labelAmt, labelCx, labelCy;          // city-name label (GL px, centre)
+        int stormN;                                // storm labels: anchor (storm centre, GL px) and opacity
+        final float[] stormX = new float[MAX_STORMS], stormY = new float[MAX_STORMS], stormAmt = new float[MAX_STORMS];
         boolean stars;
         long nowMs, cloudNowMs;           // cloudNowMs: clock for cloud motion (runs behind during a time-lapse)
         int mode;                         // shader view: 0 natural, 1 infrared, 2 sea temperature, 3 night lights
@@ -200,6 +207,45 @@ final class GlobeRenderer {
         labelW = b.getWidth(); labelH = b.getHeight();
     }
 
+    /** Replace the storm label textures; ax/ay = where the storm mark sits in each bitmap (px from top-left). */
+    void setStormLabels(Bitmap[] b, float[] ax, float[] ay) {
+        if (stormTexN > 0) GLES20.glDeleteTextures(stormTexN, stormTex, 0);
+        stormTexN = Math.min(b.length, MAX_STORMS);
+        if (stormTexN == 0) return;
+        GLES20.glGenTextures(stormTexN, stormTex, 0);
+        for (int i = 0; i < stormTexN; i++) {
+            bind(stormTex[i]);
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, b[i], 0);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+            stormW[i] = b[i].getWidth(); stormH[i] = b[i].getHeight(); stormAx[i] = ax[i]; stormAy[i] = ay[i];
+        }
+    }
+
+    private void drawStorms(Frame f) {
+        if (labelProg == 0 || stormTexN == 0) return;
+        boolean any = false;
+        for (int i = 0; i < Math.min(f.stormN, stormTexN); i++) {
+            if (f.stormAmt[i] <= 0.003f) continue;
+            if (!any) {
+                GLES20.glUseProgram(labelProg);
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+                GLES20.glEnable(GLES20.GL_BLEND);
+                GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+                any = true;
+            }
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, stormTex[i]);
+            float left = f.stormX[i] - stormAx[i], top = f.stormY[i] + stormAy[i];
+            GLES20.glUniform4f(uLabRect, left / f.w * 2f - 1f, (top - stormH[i]) / f.h * 2f - 1f,
+                    (left + stormW[i]) / f.w * 2f - 1f, top / f.h * 2f - 1f);
+            GLES20.glUniform1f(uLabAlpha, f.stormAmt[i]);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+        }
+        if (any) GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
     private static float hoursSince(long t, long now) {
         if (t <= 0) return 0f;
         return Math.max(-12f, Math.min(6f, (now - t) / 3_600_000f));    // negative = run the flow backward (time-lapse start)
@@ -299,6 +345,7 @@ final class GlobeRenderer {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
             GLES20.glViewport(0, 0, f.w, f.h);
         }
+        drawStorms(f);
         drawLabel(f);
     }
 
@@ -323,6 +370,7 @@ final class GlobeRenderer {
         if (fbo != 0) { GLES20.glDeleteFramebuffers(1, new int[]{fbo}, 0); GLES20.glDeleteTextures(1, new int[]{fboTex}, 0); fbo = 0; }
         GLES20.glDeleteTextures(7, tex, 0);
         GLES20.glDeleteTextures(4, rtex, 0);
+        if (stormTexN > 0) { GLES20.glDeleteTextures(stormTexN, stormTex, 0); stormTexN = 0; }
         GLES20.glDeleteBuffers(1, new int[]{vbo}, 0);
         GLES20.glDeleteProgram(prog);
         haveDay = haveLights = haveWater = haveClouds = false;

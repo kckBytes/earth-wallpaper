@@ -39,7 +39,9 @@ final class ReplayStore {
         String kind = CloudUpdater.kind(p);
         if (kind.equals("sst")) return;                                   // daily map, nothing to replay
         int hours = p.getInt(Prefs.REPLAY_H, 12);
-        JSONObject j = new JSONObject(new String(CloudUpdater.download(CloudUpdater.LIVE_URL + "frames.json?t=" + System.currentTimeMillis(), 20_000), "UTF-8"));
+        byte[] fj = CloudUpdater.download(CloudUpdater.LIVE_URL + "frames.json?t=" + System.currentTimeMillis(), 20_000);
+        JSONObject j = new JSONObject(new String(fj, "UTF-8"));
+        write(new File(dir(c), "frames.json"), fj);                     // kept for the per-step activity
         JSONArray arr = j.getJSONArray("frames");
         long[] ts = new long[arr.length()];
         java.util.Map<Long, Long> ver = new java.util.HashMap<>();      // server-side version of each cloud frame
@@ -74,6 +76,7 @@ final class ReplayStore {
         // keep at most 24 h, and nothing older than the chosen length for this view
         File[] all = d.listFiles();
         if (all != null) for (File f : all) {
+            if (f.getName().equals("frames.json")) continue;
             try {
                 long t = Long.parseLong(f.getName().substring(0, f.getName().indexOf('_')));
                 boolean other = !f.getName().endsWith("_f.png") && !f.getName().endsWith(suffix(kind));
@@ -106,6 +109,26 @@ final class ReplayStore {
         if (out.isEmpty()) return out;
         long newest = out.get(out.size() - 1);
         out.removeIf(t -> t < newest - hours * H - 60_000);
+        return out;
+    }
+
+    /** How much the clouds change from each frame to the next: 8 x 4 grid (lon x lat, row 0 = north), x1000. */
+    static java.util.Map<Long, int[]> activity(Context c) {
+        java.util.Map<Long, int[]> out = new java.util.HashMap<>();
+        try {
+            File f = new File(dir(c), "frames.json");
+            byte[] b = new byte[(int) f.length()];
+            try (FileInputStream in = new FileInputStream(f)) { int o = 0, n; while (o < b.length && (n = in.read(b, o, b.length - o)) > 0) o += n; }
+            JSONArray arr = new JSONObject(new String(b, "UTF-8")).getJSONArray("frames");
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.getJSONObject(i);
+                JSONArray a = o.optJSONArray("a");
+                if (a == null || a.length() != 32) continue;
+                int[] v = new int[32];
+                for (int k = 0; k < 32; k++) v[k] = a.getInt(k);
+                out.put(o.getLong("t"), v);
+            }
+        } catch (Exception ignored) { }
         return out;
     }
 
