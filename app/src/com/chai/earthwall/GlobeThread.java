@@ -731,7 +731,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 new int[]{EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE}, 0);
         EGL14.eglMakeCurrent(dpy, pbuffer, pbuffer, egl);
         glOk = r.init(ctx.getAssets());
-        if (glOk) { loadTextures(); stormsMtime = -1; }
+        if (glOk) { loadTextures(); stormsMtime = -1; auroraMtime = -1; }
     }
 
     private void createWindow(SurfaceHolder holder) {
@@ -902,6 +902,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         double sdt = streakNs == 0 ? 0 : (frameNs - streakNs) / 1e9;
         streakNs = frameNs;
         applyWx(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, sdt);
+        projectDots(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
         projectStorms(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, dist, cx, cy, radius);
         fr.labelAmt = labelAlpha(frameNs) * readyFade;
         fr.labelCx = width * 0.5f;
@@ -933,15 +934,93 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             case "launch": return 1;
             case "volcano": case "quake": case "fire": case "flood": return 2;
             case "low": return 3;
+            case "sat": return 1;
+            case "camera": return 5;
             default: return 4;
         }
+    }
+
+    // ---- fires, lightning, aurora
+    private long skyMtime = -1, auroraMtime = -1;
+    private long[] fT = new long[0], bT = new long[0];
+    private float[] fXyz = new float[0], fPow = new float[0], bXyz = new float[0], bN = new float[0];
+    private final java.nio.FloatBuffer fireBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_DOTS * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+    private final java.nio.FloatBuffer boltBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_DOTS * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+    private final java.util.Random flick = new java.util.Random();
+    private boolean haveAurora;
+
+    private static void xyz(double lat, double lon, float[] a, int i) {
+        double la = Math.toRadians(lat), lo = Math.toRadians(lon);
+        a[3 * i] = (float) (Math.cos(la) * Math.cos(lo)); a[3 * i + 1] = (float) (Math.cos(la) * Math.sin(lo)); a[3 * i + 2] = (float) Math.sin(la);
+    }
+
+    private void loadSky(java.io.File fk) {
+        long m = fk.exists() ? fk.lastModified() : 0;
+        if (m != skyMtime) {
+            skyMtime = m;
+            try {
+                org.json.JSONObject o = new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(fk.toPath()), "UTF-8"));
+                org.json.JSONArray fa = o.optJSONArray("fires"), la = o.optJSONArray("lightning");
+                int nf = fa == null ? 0 : Math.min(fa.length(), GlobeRenderer.MAX_DOTS), nl = la == null ? 0 : la.length();
+                long[] ft = new long[nf]; float[] fx = new float[nf * 3], fp = new float[nf];
+                for (int i = 0; i < nf; i++) { org.json.JSONArray q = fa.getJSONArray(i); ft[i] = q.getLong(0); xyz(q.getDouble(1), q.getDouble(2), fx, i); fp[i] = (float) q.getDouble(3); }
+                long[] bt = new long[nl]; float[] bx = new float[nl * 3], bn = new float[nl];
+                for (int i = 0; i < nl; i++) { org.json.JSONArray q = la.getJSONArray(i); bt[i] = q.getLong(0); xyz(q.getDouble(1), q.getDouble(2), bx, i); bn[i] = (float) q.getDouble(3); }
+                fT = ft; fXyz = fx; fPow = fp; bT = bt; bXyz = bx; bN = bn;
+            } catch (Exception e) { Log.w(TAG, "sky.json unreadable", e); }
+        }
+        java.io.File fa = new java.io.File(ctx.getFilesDir(), "aurora.png");
+        long am = fa.exists() ? fa.lastModified() : 0;
+        if (am != auroraMtime && glOk) {
+            auroraMtime = am;
+            android.graphics.Bitmap b = am > 0 ? android.graphics.BitmapFactory.decodeFile(fa.getPath()) : null;
+            if (b != null) {
+                int w = b.getWidth(), hh = b.getHeight();
+                int[] px = new int[w * hh];
+                b.getPixels(px, 0, w, 0, 0, w, hh); b.recycle();
+                byte[] l8 = new byte[w * hh];
+                for (int i = 0; i < px.length; i++) l8[i] = (byte) ((px[i] >> 8) & 0xFF);
+                r.uploadAurora(l8, w, hh);
+                haveAurora = true;
+            }
+        }
+    }
+
+    /** Fires seen in the 24 h before T glow orange; lightning of the last 20 min before T flickers. */
+    private void projectDots(long T) {
+        fr.fireN = fr.boltN = 0;
+        fr.auroraAmt = haveAurora ? 1f : 0f;
+        if (!cfg.storms) return;
+        final long DAY = 86_400_000L, BIN = 600_000L;
+        fireBuf.position(0);
+        int n = 0;
+        for (int i = 0; i < fT.length && n < GlobeRenderer.MAX_DOTS; i++) {
+            long age = T - fT[i];
+            if (age < 0 || age > DAY) continue;
+            float a = (float) Math.min(1, 0.22 + Math.log10(1 + fPow[i]) / 4.5) * (float) Math.min(1, age / 1_800_000.0 + 0.2)
+                    * (float) Math.min(1, (DAY - age) / 7_200_000.0);
+            fireBuf.put(fXyz[3 * i]).put(fXyz[3 * i + 1]).put(fXyz[3 * i + 2]).put(a * 0.75f); n++;
+        }
+        fireBuf.position(0); fr.fireDots = fireBuf; fr.fireN = n;
+        boltBuf.position(0);
+        n = 0;
+        for (int i = 0; i < bT.length && n < GlobeRenderer.MAX_DOTS; i++) {
+            long age = T - bT[i];
+            if (age < 0 || age > 2 * BIN) continue;
+            double p = Math.min(0.5, 0.04 + bN[i] / 60.0);              // busier cells flash more often
+            float a = flick.nextDouble() < p ? 1f : 0.10f;
+            boltBuf.put(bXyz[3 * i]).put(bXyz[3 * i + 1]).put(bXyz[3 * i + 2]).put(a); n++;
+        }
+        boltBuf.position(0); fr.boltDots = boltBuf; fr.boltN = n;
     }
 
     private void maybeLoadStorms(long frameNs) {
         if (stormsMtime >= 0 && frameNs - stormsCheckNs < 30_000_000_000L) return;
         stormsCheckNs = frameNs;
         java.io.File f = new java.io.File(ctx.getFilesDir(), "storms.json");
-        long m = f.exists() ? f.lastModified() : 0;
+        java.io.File fs = new java.io.File(ctx.getFilesDir(), "sats.json"), fk = new java.io.File(ctx.getFilesDir(), "sky.json");
+        long m = (f.exists() ? f.lastModified() : 0) + (fs.exists() ? fs.lastModified() : 0) + (fk.exists() ? fk.lastModified() : 0);
+        loadSky(fk);
         if (m == stormsMtime) return;
         stormsMtime = m;
         final long H = 3_600_000L;
@@ -970,6 +1049,37 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 }
             }
         } catch (Exception e) { Log.w(TAG, "labels unreadable", e); }
+        try {                                                            // space stations, moving along their orbits
+            if (fs.exists()) {
+                org.json.JSONArray arr = new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(fs.toPath()), "UTF-8")).getJSONArray("sats");
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject o = arr.getJSONObject(i);
+                    org.json.JSONArray tr = o.getJSONArray("track");
+                    if (tr.length() < 2) continue;
+                    Storm s = new Storm();
+                    s.type = "sat"; s.name = o.getString("name");
+                    s.kind = o.optString("kind", ""); s.detail = o.optInt("alt_km", 0) > 0 ? o.optInt("alt_km") + " km up" : "";
+                    s.t = new long[tr.length()]; s.lat = new double[tr.length()]; s.lon = new double[tr.length()];
+                    for (int k = 0; k < tr.length(); k++) {
+                        org.json.JSONArray q = tr.getJSONArray(k);
+                        s.t[k] = q.getLong(0); s.lat[k] = q.getDouble(1); s.lon[k] = q.getDouble(2);
+                    }
+                    s.from = s.t[0]; s.until = s.t[s.t.length - 1]; s.lastObs = s.until; s.prio = 1;
+                    out.add(s);
+                }
+            }
+            if (fk.exists()) {                                           // the five satellites that take our clouds
+                org.json.JSONArray arr = new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(fk.toPath()), "UTF-8")).optJSONArray("cameras");
+                for (int i = 0; arr != null && i < arr.length(); i++) {
+                    org.json.JSONObject o = arr.getJSONObject(i);
+                    Storm s = new Storm();
+                    s.type = "camera"; s.name = o.getString("name"); s.kind = "Takes your clouds"; s.detail = "35,786 km up";
+                    s.t = new long[]{0}; s.lat = new double[]{0}; s.lon = new double[]{o.getDouble("lon")};
+                    s.from = 0; s.until = Long.MAX_VALUE; s.lastObs = 0; s.prio = 5;
+                    out.add(s);
+                }
+            }
+        } catch (Exception e) { Log.w(TAG, "sky labels unreadable", e); }
         out.sort((x, y) -> Integer.compare(x.prio, y.prio));
         while (out.size() > GlobeRenderer.MAX_STORMS) out.remove(out.size() - 1);
         storms = out;
@@ -1054,6 +1164,15 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                     p.quadTo(gx - gr * 0.5f, y - gr * 0.45f, gx, y); p.quadTo(gx + gr * 0.5f, y + gr * 0.45f, gx + gr, y);
                     c.drawPath(p, g);
                 }
+                break;
+            case "sat":                                                    // a body with two solar wings
+                c.drawCircle(gx, gy, gr * 0.28f, g);
+                c.drawLine(gx - gr, gy, gx - gr * 0.45f, gy, g); c.drawLine(gx + gr * 0.45f, gy, gx + gr, gy, g);
+                c.drawLine(gx - gr, gy - gr * 0.4f, gx - gr, gy + gr * 0.4f, g); c.drawLine(gx + gr, gy - gr * 0.4f, gx + gr, gy + gr * 0.4f, g);
+                break;
+            case "camera":                                                 // a small eye looking down
+                p.moveTo(gx - gr, gy); p.quadTo(gx, gy - gr * 1.1f, gx + gr, gy); p.quadTo(gx, gy + gr * 1.1f, gx - gr, gy); p.close();
+                c.drawPath(p, g); c.drawCircle(gx, gy, gr * 0.25f, g);
                 break;
             case "launch":                                                 // a rocket going up
                 p.moveTo(gx, gy - gr); p.lineTo(gx + gr * 0.45f, gy + gr * 0.2f); p.lineTo(gx + gr * 0.45f, gy + gr * 0.75f);

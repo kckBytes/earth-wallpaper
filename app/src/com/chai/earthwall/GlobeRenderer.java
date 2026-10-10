@@ -44,7 +44,9 @@ final class GlobeRenderer {
     // weather views: two model sheets (the times around "now") + palettes; wind streaks
     private final int[] wxTex = new int[3];            // 0, 1 sheets; 2 palette
     private int uWxMix, uWxChan, uWxPal, uWxClouds;
-    private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, streakVbo, streakIbo, streakIdx;
+    private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, sColor, sRound, sPoint, streakVbo, streakIbo, streakIdx, dotVbo;
+    static final int MAX_DOTS = 4096;
+    private int auroraTex, uAuroraAmt;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
     private int fbo, fboTex, fboW, fboH;
 
@@ -56,6 +58,8 @@ final class GlobeRenderer {
         float labelAmt, labelCx, labelCy;          // city-name label (GL px, centre)
         float wxMix, wxClouds; int wxChan, wxPal;  // weather view: blend between the two sheets, channel, palette row
         java.nio.FloatBuffer streaks; float streakAlpha;   // wind streak points (null = none)
+        java.nio.FloatBuffer fireDots, boltDots; int fireN, boltN;   // fires / lightning: xyz + opacity per dot
+        float auroraAmt;
         int stormN;                                // storm labels: anchor (storm centre, GL px) and opacity
         final float[] stormX = new float[MAX_STORMS], stormY = new float[MAX_STORMS], stormAmt = new float[MAX_STORMS];
         boolean stars;
@@ -92,7 +96,8 @@ final class GlobeRenderer {
         uMarkerPx = loc("uMarkerPx"); uMarkerAmt = loc("uMarkerAmt"); uMarkerSize = loc("uMarkerSize");
         uPass = loc("uPass"); uRect = loc("uRect"); uMode = loc("uMode");
         uWxMix = loc("uWxMix"); uWxChan = loc("uWxChan"); uWxPal = loc("uWxPal"); uWxClouds = loc("uWxClouds");
-        String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev", "uWxA", "uWxB", "uPal"};
+        uAuroraAmt = loc("uAuroraAmt");
+        String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev", "uWxA", "uWxB", "uPal", "uAurora"};
         for (int i = 0; i < samplers.length; i++) GLES20.glUniform1i(loc(samplers[i]), i);
 
         float[] tri = {0f, 0f, 1f, 0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f, 1f};   // unit quad
@@ -115,6 +120,8 @@ final class GlobeRenderer {
         uploadFlow(5, FlowEstimator.still());
         uploadFlow(6, FlowEstimator.still());
         GLES20.glGenTextures(3, wxTex, 0);
+        int[] at = new int[1]; GLES20.glGenTextures(1, at, 0); auroraTex = at[0];
+        uploadAurora(new byte[4], 2, 2);
         byte[] one = new byte[4 * 3];
         for (int k = 0; k < 2; k++) uploadWx(k, one, 2, 2);
         bind(wxTex[2]);
@@ -134,9 +141,14 @@ final class GlobeRenderer {
             sView = GLES20.glGetUniformLocation(streakProg, "uView"); sCenter = GLES20.glGetUniformLocation(streakProg, "uCenter");
             sRadius = GLES20.glGetUniformLocation(streakProg, "uRadius"); sCamDist = GLES20.glGetUniformLocation(streakProg, "uCamDist");
             sRes = GLES20.glGetUniformLocation(streakProg, "uRes"); sAlpha = GLES20.glGetUniformLocation(streakProg, "uAlpha");
+            sColor = GLES20.glGetUniformLocation(streakProg, "uColor"); sRound = GLES20.glGetUniformLocation(streakProg, "uRound");
+            sPoint = GLES20.glGetUniformLocation(streakProg, "uPointSize");
             int[] bb = new int[2];
             GLES20.glGenBuffers(2, bb, 0);
             streakVbo = bb[0]; streakIbo = bb[1];
+            int[] db = new int[1]; GLES20.glGenBuffers(1, db, 0); dotVbo = db[0];
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, dotVbo);
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, MAX_DOTS * 16, null, GLES20.GL_STREAM_DRAW);
             int n = WindStreaks.N, k = WindStreaks.K;
             java.nio.ShortBuffer ib = ByteBuffer.allocateDirect(n * (k + 1) * 2).order(ByteOrder.nativeOrder()).asShortBuffer();
             for (int i = 0; i < n; i++) { for (int j = 0; j < k; j++) ib.put((short) (i * k + j)); ib.put((short) 0xFFFF); }
@@ -261,6 +273,17 @@ final class GlobeRenderer {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
     }
 
+    /** NOAA aurora forecast grid (L8, w x h, lon -180 at the left, north at the top). */
+    void uploadAurora(byte[] l8, int w, int h) {
+        bind(auroraTex);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES30.GL_R8, w, h, 0, GLES30.GL_RED, GLES20.GL_UNSIGNED_BYTE, ByteBuffer.wrap(l8));
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    }
+
     private void clampLinear() {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
@@ -277,6 +300,9 @@ final class GlobeRenderer {
         GLES20.glUniform1f(sCamDist, f.camDist);
         GLES20.glUniform2f(sRes, f.w, f.h);
         GLES20.glUniform1f(sAlpha, f.streakAlpha);
+        GLES20.glUniform3f(sColor, 1f, 1f, 1f);
+        GLES30.glUniform1i(sRound, 0);
+        GLES20.glUniform1f(sPoint, 1f);
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, streakVbo);
         GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, WindStreaks.N * WindStreaks.K * 16, f.streaks);
         GLES20.glEnableVertexAttribArray(0);
@@ -291,6 +317,40 @@ final class GlobeRenderer {
         GLES20.glDisable(GLES30.GL_PRIMITIVE_RESTART_FIXED_INDEX);
         GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, 0);
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);           // the quad, for the label passes
+        GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, 0);
+    }
+
+    private void drawDots(Frame f) {
+        if (streakProg == 0 || (f.fireN == 0 && f.boltN == 0)) return;
+        GLES20.glUseProgram(streakProg);
+        GLES20.glUniformMatrix3fv(sView, 1, false, f.view, 0);
+        GLES20.glUniform2f(sCenter, f.cx, f.cy);
+        GLES20.glUniform1f(sRadius, f.radius);
+        GLES20.glUniform1f(sCamDist, f.camDist);
+        GLES20.glUniform2f(sRes, f.w, f.h);
+        GLES30.glUniform1i(sRound, 1);
+        GLES20.glUniform1f(sAlpha, f.fade);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);         // dots glow
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, dotVbo);
+        GLES20.glEnableVertexAttribArray(0);
+        float s = Math.max(4f, f.radius / 120f);
+        if (f.fireN > 0) {
+            GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, f.fireN * 16, f.fireDots);
+            GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, 0);
+            GLES20.glUniform3f(sColor, 1f, 0.45f, 0.12f);
+            GLES20.glUniform1f(sPoint, s);
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, f.fireN);
+        }
+        if (f.boltN > 0) {
+            GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, f.boltN * 16, f.boltDots);
+            GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, 0);
+            GLES20.glUniform3f(sColor, 0.85f, 0.9f, 1f);
+            GLES20.glUniform1f(sPoint, s * 1.4f);
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, f.boltN);
+        }
+        GLES20.glDisable(GLES20.GL_BLEND);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);
         GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, 0);
     }
 
@@ -383,8 +443,8 @@ final class GlobeRenderer {
                 : f.tail
                 ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], rtex[rb], tex[5 + cur], rtex[3]}
                 : new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], tex[3 + prev], tex[5 + cur], tex[5 + prev]};
-        int[] units = java.util.Arrays.copyOf(units0, 10);
-        units[7] = wxTex[0]; units[8] = wxTex[1]; units[9] = wxTex[2];
+        int[] units = java.util.Arrays.copyOf(units0, 11);
+        units[7] = wxTex[0]; units[8] = wxTex[1]; units[9] = wxTex[2]; units[10] = auroraTex;
         for (int i = 0; i < units.length; i++) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, units[i]);
@@ -402,6 +462,7 @@ final class GlobeRenderer {
         GLES30.glUniform1i(uWxChan, f.wxChan);
         GLES30.glUniform1i(uWxPal, f.wxPal);
         GLES20.glUniform1f(uWxClouds, f.wxClouds);
+        GLES20.glUniform1f(uAuroraAmt, f.auroraAmt);
         GLES20.glUniform1f(uFade, f.fade);
         GLES20.glUniform1f(uTime, f.time);
         GLES20.glUniform2f(uStarShift, f.starDx * s, f.starDy * s);
@@ -444,6 +505,7 @@ final class GlobeRenderer {
             GLES20.glViewport(0, 0, f.w, f.h);
         }
         drawStreaks(f);
+        drawDots(f);
         drawStorms(f);
         drawLabel(f);
     }

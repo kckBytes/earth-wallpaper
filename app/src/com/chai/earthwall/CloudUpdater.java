@@ -161,6 +161,7 @@ final class CloudUpdater {
         boolean have = ("live:" + kind).equals(p.getString(Prefs.CLOUDS_SRC, "")) && cur(c).length() > 10_000
                 && res.equals(p.getString(Prefs.CLOUDS_RES, ""));
         syncStorms(c, p, now);
+        syncSky(c, p, now, metered);
         try { WxStore.sync(c, p, metered); } catch (Exception e) { Log.w(TAG, "weather sync failed: " + e.getMessage()); }
         if (!force && have && obs <= p.getLong(Prefs.CLOUDS_TIME, 0)) {
             p.edit().putLong(Prefs.CLOUDS_CHECKED, now).apply();
@@ -193,6 +194,27 @@ final class CloudUpdater {
         CloudFrame f = new CloudFrame(fresh, flow, obs, kind);
         for (Sink s : sinks) s.onClouds(f);
         try { ReplayStore.sync(c, p, metered); } catch (Exception e) { Log.w(TAG, "replay sync failed", e); }
+    }
+
+    /** Fires, lightning, aurora (every 10 min, ~100 KB) and the space-station tracks (every 3 h). */
+    private static void syncSky(Context c, SharedPreferences p, long now, boolean metered) {
+        try {
+            if (now - p.getLong("sky_checked", 0) >= (metered ? 30 : 10) * 60_000L) {
+                saveFile(c, "sky.json", download(LIVE_BASE + "sky.json?t=" + now, 20_000));
+                saveFile(c, "aurora.png", download(LIVE_BASE + "aurora.png?t=" + now, 20_000));
+                p.edit().putLong("sky_checked", now).apply();
+            }
+            if (now - p.getLong("sats_checked", 0) >= 3 * 3_600_000L) {
+                saveFile(c, "sats.json", download(LIVE_BASE + "sats.json?t=" + now, 30_000));
+                p.edit().putLong("sats_checked", now).apply();
+            }
+        } catch (Exception e) { Log.w(TAG, "sky: " + e.getMessage()); }
+    }
+
+    private static void saveFile(Context c, String name, byte[] b) throws Exception {
+        File tmp = new File(c.getFilesDir(), name + ".tmp"), dst = new File(c.getFilesDir(), name);
+        try (OutputStream out = new FileOutputStream(tmp)) { out.write(b); }
+        if (!tmp.renameTo(dst)) { dst.delete(); tmp.renameTo(dst); }
     }
 
     /** Active tropical cyclones with tracks (a few KB), at most every 20 min. */
