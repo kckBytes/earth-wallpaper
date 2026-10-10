@@ -1,7 +1,7 @@
 $adb = 'C:\Users\chait\android-dev\sdk\platform-tools\adb.exe'
-$out = 'C:\Users\chait\EarthWallpaper\emu'
+$out = 'C:\Users\chait\Claude\EarthWallpaper\emu'
 function shot($n) { & $adb -e shell screencap -p /sdcard/s.png; & $adb -e pull /sdcard/s.png "$out\$n.png" 2>&1 | Out-Null }
-& $adb -e install -r C:\Users\chait\EarthWallpaper\Earth.apk
+& $adb -e install -r C:\Users\chait\Claude\EarthWallpaper\Earth.apk
 & $adb -e logcat -c
 & $adb -e shell input keyevent 26; Start-Sleep 2
 & $adb -e shell input keyevent 26; Start-Sleep 4

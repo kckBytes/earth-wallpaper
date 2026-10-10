@@ -1,4 +1,4 @@
-$root = 'C:\Users\chait\EarthWallpaper'
+$root = 'C:\Users\chait\Claude\EarthWallpaper'
 $in = "$root\incoming\v12"
 $expect = @{
   'globe.frag' = '83ecb98e6c09e08c389fe7d43e82dc8e'; 'globe.vert' = '87f767132e533237e7e19fe8fc0edb98'; 'label.frag' = '8c1014dbd96ffb97fd1c128e06e03035'

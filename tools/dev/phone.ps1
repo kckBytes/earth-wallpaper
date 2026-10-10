@@ -1,6 +1,6 @@
 param([string]$step = 'state', [string]$arg = '')
 $adb = 'C:\Users\chait\android-dev\sdk\platform-tools\adb.exe'
-$out = 'C:\Users\chait\EarthWallpaper\phone'
+$out = 'C:\Users\chait\Claude\EarthWallpaper\phone'
 New-Item -ItemType Directory -Force $out | Out-Null
 function ui {
     & $adb -d shell uiautomator dump /sdcard/earth_ui.xml 2>&1 | Out-Null
@@ -16,7 +16,7 @@ switch ($step) {
         & $adb -d shell dumpsys wallpaper | Select-String 'System wallpaper state|Lock wallpaper state|mWhich|mWallpaperComponent|mImageWallpaper' | % { $_.Line.Trim() }
     }
     'install' {
-        & $adb -d install C:\Users\chait\EarthWallpaper\Earth.apk 2>&1
+        & $adb -d install C:\Users\chait\Claude\EarthWallpaper\Earth.apk 2>&1
         & $adb -d shell pm list packages com.chai.earthwall
     }
     'open' {

@@ -1,5 +1,5 @@
 $ProgressPreference = 'SilentlyContinue'
-$out = 'C:\Users\chait\EarthWallpaper\raw\feeds'
+$out = 'C:\Users\chait\Claude\EarthWallpaper\raw\feeds'
 New-Item -ItemType Directory -Force $out | Out-Null
 function probe($name, $url, $file) {
     try {

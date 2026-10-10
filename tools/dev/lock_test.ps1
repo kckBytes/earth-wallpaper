@@ -1,5 +1,5 @@
 $adb = 'C:\Users\chait\android-dev\sdk\platform-tools\adb.exe'
-$out = 'C:\Users\chait\EarthWallpaper\emu'
+$out = 'C:\Users\chait\Claude\EarthWallpaper\emu'
 & $adb -e shell input tap 540 1293
 Start-Sleep 4
 & $adb -e shell dumpsys wallpaper | Select-String -Pattern 'mWallpaperComponent|which=|mWhich|Lock|lock' | Select -First 8

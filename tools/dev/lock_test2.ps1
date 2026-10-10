@@ -1,5 +1,5 @@
 $adb = 'C:\Users\chait\android-dev\sdk\platform-tools\adb.exe'
-$out = 'C:\Users\chait\EarthWallpaper\emu'
+$out = 'C:\Users\chait\Claude\EarthWallpaper\emu'
 & $adb -e shell locksettings set-pin 1234
 & $adb -e logcat -c
 & $adb -e shell input keyevent 26

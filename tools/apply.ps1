@@ -1,6 +1,6 @@
 param([string]$ver, [string]$hashes)
 # hashes: "name=md5;name=md5;..."  Files in incoming\<ver>\ (java -> src, everything else -> assets)
-$root = 'C:\Users\chait\EarthWallpaper'
+$root = 'C:\Users\chait\Claude\EarthWallpaper'
 $in = "$root\incoming\$ver"
 $expect = @{}
 foreach ($p in $hashes.Split(';')) { $kv = $p.Split('='); $expect[$kv[0]] = $kv[1] }

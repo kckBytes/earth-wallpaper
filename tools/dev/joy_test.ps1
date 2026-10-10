@@ -1,5 +1,5 @@
 $adb = 'C:\Users\chait\android-dev\sdk\platform-tools\adb.exe'
-$out = 'C:\Users\chait\EarthWallpaper\phone'
+$out = 'C:\Users\chait\Claude\EarthWallpaper\phone'
 function shot($n) { & $adb -d shell screencap -p /sdcard/earth_shot.png; & $adb -d pull /sdcard/earth_shot.png "$out\$n.png" 2>&1 | Out-Null; & $adb -d shell rm /sdcard/earth_shot.png }
 & $adb -d shell am start -n com.chai.earthwall/.ExploreActivity | Out-Null
 Start-Sleep 5

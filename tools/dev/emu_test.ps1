@@ -1,11 +1,11 @@
 param([string]$step = 'install')
 $adb = 'C:\Users\chait\android-dev\sdk\platform-tools\adb.exe'
-$out = 'C:\Users\chait\EarthWallpaper\emu'
+$out = 'C:\Users\chait\Claude\EarthWallpaper\emu'
 New-Item -ItemType Directory -Force $out | Out-Null
 function shot($name) { & $adb -e shell screencap -p /sdcard/s.png; & $adb -e pull /sdcard/s.png "$out\$name.png" 2>&1 | Out-Null }
 
 if ($step -eq 'install') {
-    & $adb -e install -r C:\Users\chait\EarthWallpaper\Earth.apk
+    & $adb -e install -r C:\Users\chait\Claude\EarthWallpaper\Earth.apk
     & $adb -e logcat -c
     & $adb -e shell am start -a android.service.wallpaper.CHANGE_LIVE_WALLPAPER --ecn android.service.wallpaper.extra.LIVE_WALLPAPER_COMPONENT com.chai.earthwall/.EarthWallpaperService
     Start-Sleep 8
