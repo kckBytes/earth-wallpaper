@@ -806,13 +806,27 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         }
     }
 
-    // ---- storm labels: active tropical cyclones from the live server, moving along their tracks
+    // ---- labels on the globe: tropical cyclones, big lows / highs, eruptions, fires, quakes, floods, launches.
+    // Small and quiet, each moving or fading with time (the replay's time while it plays), and thinned so they
+    // never overlap: higher-priority labels win.
     private static final class Storm {
-        String name, kind, detail; long lastObs; long[] t; double[] lat, lon;
+        String type, name, kind, detail; long lastObs, from, until; long[] t; double[] lat, lon;
+        float w, h, ax, ay; int prio;
     }
     private List<Storm> storms = new ArrayList<>();
     private long stormsMtime = -1, stormsCheckNs;
     private final double[] stormLL = new double[2];
+    private final float[] placed = new float[GlobeRenderer.MAX_STORMS * 4];
+
+    private static int prioOf(String type) {
+        switch (type) {
+            case "storm": return 0;
+            case "launch": return 1;
+            case "volcano": case "quake": case "fire": case "flood": return 2;
+            case "low": return 3;
+            default: return 4;
+        }
+    }
 
     private void maybeLoadStorms(long frameNs) {
         if (stormsMtime >= 0 && frameNs - stormsCheckNs < 30_000_000_000L) return;
@@ -821,16 +835,18 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         long m = f.exists() ? f.lastModified() : 0;
         if (m == stormsMtime) return;
         stormsMtime = m;
+        final long H = 3_600_000L;
         List<Storm> out = new ArrayList<>();
         try {
             if (m > 0) {
                 byte[] b = java.nio.file.Files.readAllBytes(f.toPath());
                 org.json.JSONArray arr = new org.json.JSONObject(new String(b, "UTF-8")).getJSONArray("storms");
-                for (int i = 0; i < arr.length() && out.size() < GlobeRenderer.MAX_STORMS; i++) {
+                for (int i = 0; i < arr.length(); i++) {
                     org.json.JSONObject o = arr.getJSONObject(i);
                     org.json.JSONArray tr = o.getJSONArray("track");
                     if (tr.length() == 0) continue;
                     Storm s = new Storm();
+                    s.type = o.optString("type", "storm");
                     s.name = o.getString("name"); s.kind = o.optString("kind", ""); s.detail = o.optString("detail", "");
                     s.lastObs = o.optLong("last_obs", 0);
                     s.t = new long[tr.length()]; s.lat = new double[tr.length()]; s.lon = new double[tr.length()];
@@ -838,25 +854,34 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                         org.json.JSONArray q = tr.getJSONArray(k);
                         s.t[k] = q.getLong(0); s.lat[k] = q.getDouble(1); s.lon[k] = q.getDouble(2);
                     }
+                    s.from = o.optLong("from", s.t[0] - 3 * H);
+                    s.until = o.optLong("until", Math.max(s.lastObs, s.t[s.t.length - 1]) + 6 * H);
+                    s.prio = prioOf(s.type);
                     out.add(s);
                 }
             }
-        } catch (Exception e) { Log.w(TAG, "storms unreadable", e); }
+        } catch (Exception e) { Log.w(TAG, "labels unreadable", e); }
+        out.sort((x, y) -> Integer.compare(x.prio, y.prio));
+        while (out.size() > GlobeRenderer.MAX_STORMS) out.remove(out.size() - 1);
         storms = out;
         Bitmap[] bs = new Bitmap[out.size()];
         float[] ax = new float[out.size()], ay = new float[out.size()];
-        for (int i = 0; i < out.size(); i++) bs[i] = makeStormLabel(out.get(i), ax, ay, i);
+        for (int i = 0; i < out.size(); i++) {
+            Storm s = out.get(i);
+            bs[i] = makeStormLabel(s, ax, ay, i);
+            s.w = bs[i].getWidth(); s.h = bs[i].getHeight(); s.ax = ax[i]; s.ay = ay[i];
+        }
         if (glOk) r.setStormLabels(bs, ax, ay);
         for (Bitmap b : bs) b.recycle();
-        if (!out.isEmpty()) Log.i(TAG, "storm labels: " + out.size());
+        if (!out.isEmpty()) Log.i(TAG, "globe labels: " + out.size());
     }
 
-    /** Small and quiet: a storm mark, the name, and its class on a second line. */
     private Bitmap makeStormLabel(Storm s, float[] ax, float[] ay, int i) {
         float d = ctx.getResources().getDisplayMetrics().density * pixelScale;
+        boolean system = s.type.equals("low") || s.type.equals("high");
         Paint name = new Paint(Paint.ANTI_ALIAS_FLAG);
         name.setColor(0xF2FFFFFF);
-        name.setTextSize(13.5f * d);
+        name.setTextSize((system ? 17f : 13.5f) * d);
         name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         name.setLetterSpacing(0.03f);
         name.setShadowLayer(4 * d, 0, 0, 0xC0000000);
@@ -864,28 +889,76 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         sub.setColor(0xB8FFFFFF);
         sub.setTextSize(10.5f * d);
         sub.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
-        String line2 = s.detail.isEmpty() ? s.kind : s.kind + " · " + s.detail;
-        float gr = 5.5f * d, gap = 6 * d, pad = 6 * d;
+        sub.setLetterSpacing(0.02f);
+        float pad = 6 * d;
         Paint.FontMetrics fn = name.getFontMetrics(), fs = sub.getFontMetrics();
-        float nameH = fn.descent - fn.ascent, subH = line2.isEmpty() ? 0 : fs.descent - fs.ascent;
+        float nameH = fn.descent - fn.ascent;
+        if (system) {                       // "L" / "H" centred on the system, pressure small beside it
+            float lw = name.measureText(s.name), gap = 2.5f * d;
+            int w = (int) Math.ceil(pad * 2 + lw + gap + sub.measureText(s.detail));
+            int h = (int) Math.ceil(pad * 2 + nameH);
+            Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(b);
+            c.drawText(s.name, pad, pad - fn.ascent, name);
+            c.drawText(s.detail, pad + lw + gap, pad - fn.ascent, sub);
+            ax[i] = pad + lw * 0.5f; ay[i] = pad + nameH * 0.55f;
+            return b;
+        }
+        String line2;
+        if (s.type.equals("launch")) {
+            String when = android.text.format.DateFormat.getTimeFormat(ctx).format(new java.util.Date(s.lastObs));
+            line2 = "Launch " + when + (s.detail.isEmpty() ? "" : " · " + s.detail);
+        } else line2 = s.detail.isEmpty() ? s.kind : s.kind.isEmpty() ? s.detail : s.kind + " · " + s.detail;
+        float gr = 5.5f * d, gap = 6 * d;
+        float subH = line2.isEmpty() ? 0 : fs.descent - fs.ascent;
         int w = (int) Math.ceil(pad * 2 + gr * 2 + gap + Math.max(name.measureText(s.name), sub.measureText(line2)));
         int h = (int) Math.ceil(pad * 2 + nameH + subH);
         Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         float gx = pad + gr, gy = pad + nameH * 0.5f;
-        // tropical-cyclone mark: a small eye with two curled arms
         Paint g = new Paint(Paint.ANTI_ALIAS_FLAG);
         g.setColor(0xF2FFFFFF);
         g.setStyle(Paint.Style.STROKE);
         g.setStrokeWidth(1.6f * d);
         g.setStrokeCap(Paint.Cap.ROUND);
+        g.setStrokeJoin(Paint.Join.ROUND);
         g.setShadowLayer(3 * d, 0, 0, 0xC0000000);
-        float er = gr * 0.42f;
-        c.drawCircle(gx, gy, er, g);
-        android.graphics.RectF arm = new android.graphics.RectF(gx - gr, gy - gr, gx + gr, gy + gr);
-        boolean south = s.lat[s.lat.length - 1] < 0;                      // southern storms turn the other way
-        c.drawArc(arm, south ? 0 : 180, south ? 75 : -75, false, g);
-        c.drawArc(arm, south ? 180 : 0, south ? 75 : -75, false, g);
+        android.graphics.Path p = new android.graphics.Path();
+        switch (s.type) {
+            case "volcano":                                                // a cone
+                p.moveTo(gx - gr, gy + gr * 0.8f); p.lineTo(gx - gr * 0.25f, gy - gr * 0.6f);
+                p.lineTo(gx + gr * 0.25f, gy - gr * 0.6f); p.lineTo(gx + gr, gy + gr * 0.8f); p.close();
+                c.drawPath(p, g);
+                break;
+            case "quake":                                                  // ripples
+                c.drawCircle(gx, gy, gr * 0.3f, g); c.drawCircle(gx, gy, gr * 0.9f, g);
+                break;
+            case "fire":                                                   // a flame
+                p.moveTo(gx, gy - gr); p.cubicTo(gx + gr * 1.1f, gy - gr * 0.1f, gx + gr * 0.8f, gy + gr, gx, gy + gr);
+                p.cubicTo(gx - gr * 0.8f, gy + gr, gx - gr * 1.1f, gy - gr * 0.1f, gx, gy - gr);
+                c.drawPath(p, g);
+                break;
+            case "flood":                                                  // two waves
+                for (int k = 0; k < 2; k++) {
+                    float y = gy - gr * 0.35f + k * gr * 0.8f;
+                    p.reset(); p.moveTo(gx - gr, y);
+                    p.quadTo(gx - gr * 0.5f, y - gr * 0.45f, gx, y); p.quadTo(gx + gr * 0.5f, y + gr * 0.45f, gx + gr, y);
+                    c.drawPath(p, g);
+                }
+                break;
+            case "launch":                                                 // a rocket going up
+                p.moveTo(gx, gy - gr); p.lineTo(gx + gr * 0.45f, gy + gr * 0.2f); p.lineTo(gx + gr * 0.45f, gy + gr * 0.75f);
+                p.lineTo(gx - gr * 0.45f, gy + gr * 0.75f); p.lineTo(gx - gr * 0.45f, gy + gr * 0.2f); p.close();
+                c.drawPath(p, g);
+                break;
+            default: {                                                     // tropical cyclone: an eye with two arms
+                c.drawCircle(gx, gy, gr * 0.42f, g);
+                android.graphics.RectF arm = new android.graphics.RectF(gx - gr, gy - gr, gx + gr, gy + gr);
+                boolean south = s.lat[s.lat.length - 1] < 0;
+                c.drawArc(arm, south ? 0 : 180, south ? 75 : -75, false, g);
+                c.drawArc(arm, south ? 180 : 0, south ? 75 : -75, false, g);
+            }
+        }
         float tx = pad + gr * 2 + gap;
         c.drawText(s.name, tx, pad - fn.ascent, name);
         if (!line2.isEmpty()) c.drawText(line2, tx, pad + nameH - fs.ascent, sub);
@@ -893,15 +966,15 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         return b;
     }
 
-    /** Where the storm is at time T (interpolated along its track), or false while it doesn't exist. */
+    /** Where the label is at time T (interpolated along its track), or false outside its time window. */
     private boolean stormAt(Storm s, long T, double[] ll) {
         int n = s.t.length;
-        final long H = 3_600_000L;
-        if (T < s.t[0] - 3 * H || T > Math.max(s.lastObs, s.t[n - 1]) + 6 * H) return false;
+        if (T < s.from || T > s.until) return false;
         if (n == 1 || T <= s.t[0]) { ll[0] = s.lat[0]; ll[1] = s.lon[0]; return true; }
         int i = 0;
         while (i < n - 2 && T > s.t[i + 1]) i++;
         double f = (double) (T - s.t[i]) / Math.max(1, s.t[i + 1] - s.t[i]);   // > 1 past the end: extrapolate
+        f = Math.min(f, 2.0);
         double dlon = s.lon[i + 1] - s.lon[i];
         if (dlon > 180) dlon -= 360; else if (dlon < -180) dlon += 360;
         ll[0] = s.lat[i] + f * (s.lat[i + 1] - s.lat[i]);
@@ -912,10 +985,12 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private void projectStorms(long T, float dist, float cx, float cy, float radius) {
         fr.stormN = 0;
         if (!cfg.storms || storms.isEmpty()) return;
-        final long H = 3_600_000L;
+        final double fadeMs = 3_600_000.0;
         float[] m = fr.view;
         double tanA = 1.0 / Math.sqrt(dist * dist - 1.0);
-        for (int i = 0; i < storms.size() && i < GlobeRenderer.MAX_STORMS; i++) {
+        int np = 0;
+        float margin = 3f * ctx.getResources().getDisplayMetrics().density * pixelScale;
+        for (int i = 0; i < storms.size() && i < GlobeRenderer.MAX_STORMS; i++) {    // already in priority order
             Storm s = storms.get(i);
             fr.stormAmt[i] = 0f;
             fr.stormN = i + 1;
@@ -926,12 +1001,19 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             double facing = vz * dist;
             if (facing <= 1.0) continue;
             double dz = dist - vz;
-            fr.stormX[i] = (float) (cx + vx / dz / tanA * radius);
-            fr.stormY[i] = (float) (cy + vy / dz / tanA * radius);
+            float x = (float) (cx + vx / dz / tanA * radius), y = (float) (cy + vy / dz / tanA * radius);
+            // screen box of this label (GL px, y up); skip it if it would overlap one already placed
+            float l = x - s.ax - margin, rr = x - s.ax + s.w + margin, top = y + s.ay + margin, bot = y + s.ay - s.h - margin;
+            boolean hit = false;
+            for (int k = 0; k < np && !hit; k++)
+                hit = l < placed[4 * k + 1] && rr > placed[4 * k] && bot < placed[4 * k + 2] && top > placed[4 * k + 3];
+            if (hit) continue;
             float edge = (float) Math.min(1.0, (facing - 1.0) / 0.9);       // fades well before the limb
-            long end = Math.max(s.lastObs, s.t[s.t.length - 1]) + 6 * H;
-            float life = (float) Math.min(1.0, Math.min((T - (s.t[0] - 3 * H)) / (double) (3 * H), (end - T) / (double) (3 * H)));
-            fr.stormAmt[i] = Math.max(0f, edge * life * 0.85f * fr.fade);
+            float life = (float) Math.min(1.0, Math.min((T - s.from) / fadeMs, (s.until - T) / fadeMs));
+            float amt = Math.max(0f, edge * life * 0.85f * fr.fade);
+            if (amt <= 0.01f) continue;
+            fr.stormX[i] = x; fr.stormY[i] = y; fr.stormAmt[i] = amt;
+            placed[4 * np] = l; placed[4 * np + 1] = rr; placed[4 * np + 2] = top; placed[4 * np + 3] = bot; np++;
         }
     }
 
