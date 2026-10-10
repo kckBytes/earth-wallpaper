@@ -40,6 +40,8 @@ uniform float uWxMix;          // 0..1 between the two times
 uniform int   uWxChan;         // 0..2 channel; 3 = wind speed from east/north; 4 = precipitation (rate + frozen share)
 uniform int   uWxPal;          // palette row
 uniform float uWxClouds;       // how much of the real (satellite) cloud cover to lay on top
+uniform sampler2D uAurora;     // NOAA aurora forecast: chance of aurora overhead (0..1), 360 x 181
+uniform float uAuroraAmt;      // 0 = off
 const float FLOW_MAX = 2.5;    // deg/hour at byte 255
 
 const float PI = 3.14159265359;
@@ -246,6 +248,10 @@ void main() {
         float L = tex(uLights, uv).r;
         vec3 lights = (vec3(1.0, 0.66, 0.30) * L * 2.2 + vec3(1.0, 0.9, 0.7) * L * L * 2.5);
         surf += lights * night * (1.0 - 0.85 * cl);
+        // aurora: a soft green glow on the night side where NOAA's forecast gives it a chance (red fringe when strong)
+        float au = uAuroraAmt > 0.0 ? textureLod(uAurora, uv, 0.0).r : 0.0;
+        vec3 aurora = (vec3(0.18, 1.0, 0.42) * pow(au, 1.2) + vec3(0.8, 0.15, 0.35) * pow(au, 3.0) * 0.4) * 0.22 * uAuroraAmt;
+        surf += aurora * night;
         // night-side cloud tops stay faintly visible (as in infrared night imagery) so weather reads 24 h a day
         surf += (albedo * 0.0035 + vec3(cl * cl) * 0.020) * vec3(0.60, 0.72, 1.0) * night;
 
@@ -304,7 +310,7 @@ void main() {
             float Ln = tex(uLights, uv).r;
             surf = (vec3(1.0, 0.66, 0.30) * Ln * 2.2 + vec3(1.0, 0.9, 0.7) * Ln * Ln * 2.5) * (1.0 - 0.75 * cl)
                  + (albedo * 0.006 + vec3(cl * cl) * 0.06) * vec3(0.60, 0.72, 1.0)
-                 + vec3(0.10, 0.20, 0.45) * pow(1.0 - muV, 2.5) * 0.12;
+                 + vec3(0.10, 0.20, 0.45) * pow(1.0 - muV, 2.5) * 0.12 + aurora * 1.6;
         }
         col = mix(col, surf, cov);
     }
