@@ -42,7 +42,8 @@ final class ReplayStore {
         JSONObject j = new JSONObject(new String(CloudUpdater.download(CloudUpdater.LIVE_URL + "frames.json?t=" + System.currentTimeMillis(), 20_000), "UTF-8"));
         JSONArray arr = j.getJSONArray("frames");
         long[] ts = new long[arr.length()];
-        for (int i = 0; i < ts.length; i++) ts[i] = arr.getJSONObject(i).getLong("t");
+        java.util.Map<Long, Long> ver = new java.util.HashMap<>();      // server-side version of each cloud frame
+        for (int i = 0; i < ts.length; i++) { JSONObject o = arr.getJSONObject(i); ts[i] = o.getLong("t"); ver.put(ts[i], o.optLong("v", 0)); }
         Arrays.sort(ts);
         if (ts.length == 0) return;
         long newest = ts[ts.length - 1];
@@ -54,7 +55,8 @@ final class ReplayStore {
         for (int i = want.size() - 1; i >= start; i--) {                  // newest first
             long t = want.get(i);
             File img = new File(d, t + suffix(kind)), fl = new File(d, t + "_f.png");
-            if (!img.exists() || img.length() < 1000) {
+            long v = kind.equals("c") ? ver.getOrDefault(t, 0L) : 0L;     // frame re-made on the server since we got it
+            if (!img.exists() || img.length() < 1000 || (v > 0 && img.lastModified() < v)) {
                 byte[] b = CloudUpdater.download(CloudUpdater.LIVE_URL + "frames/" + t + suffix(kind), 60_000);
                 write(img, b); fetched++; kb += b.length / 1024;
             }
