@@ -23,6 +23,7 @@ final class Prefs {
     static final String PARALLAX_GAIN = "parallax_gain";
     static final String MARKER = "marker";
     static final String STORMS = "storm_labels";
+    static final String STREAKS = "wind_streaks";
     static final String TWIST = "twist";
     static final String FLIP = "flip";
     static final String KNOCK = "knock_zoom";
@@ -67,12 +68,12 @@ final class Prefs {
     }
 
     /** Which data map a view needs: c = clouds, bt = infrared temperature, sst = sea-surface temperature. */
-    static String kind(int view) { return view == 1 ? "bt" : view == 2 ? "sst" : "c"; }
+    static String kind(int view) { return view == 1 ? "bt" : view == 2 ? "sst" : "c"; }   // weather views (10+) keep the clouds
 
     static final class Config {
         City city = HOME_DEFAULT;
         float size = 1f, height = DEF_HEIGHT, gain = DEF_GAIN;
-        boolean horizon, motion, parallax = true, marker = true, stars = true, storms = true;
+        boolean horizon, motion, parallax = true, marker = true, stars = true, storms = true, streaks = true;
         int view = 0, replayH = 12;
     }
 
@@ -94,6 +95,7 @@ final class Prefs {
         c.parallax = p.getBoolean(PARALLAX, true);
         c.marker = p.getBoolean(MARKER, true);
         c.storms = p.getBoolean(STORMS, true);
+        c.streaks = p.getBoolean(STREAKS, true);
         c.stars = p.getBoolean(STARS, true);
         c.view = p.getInt(VIEW, 0);
         c.replayH = p.getInt(REPLAY_H, 12);

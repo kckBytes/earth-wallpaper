@@ -375,7 +375,112 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private int shaderMode() {
         if (dataKind.equals("bt")) return 1;
         if (dataKind.equals("sst")) return 2;
+        if (cfg.view >= 10) return wxTimes.size() >= 1 && wxView == cfg.view ? cfg.view : 0;
         return cfg.view == 3 ? 3 : 0;
+    }
+
+    // ---- weather views: model sheets around the moment on screen, blended; wind streaks on top
+    private List<Long> wxTimes = new ArrayList<>();
+    private final java.util.Map<Long, byte[]> wxField = new java.util.HashMap<>(), wxWind = new java.util.HashMap<>();
+    private int wxView = -1, wxW = 720, wxH = 360;
+    private long wxStamp = -1, wxCheckNs, wxUpA = -1, wxUpB = -1;
+    private float[] windA, windB; private long windTA = -1, windTB = -1; private double windMix;
+    private final WindStreaks streaks = new WindStreaks();
+    private long streakNs;
+    private boolean wxLoading;
+
+    private void maybeLoadWx(long frameNs) {
+        if (cfg.view < 10) { if (wxView != -1) { wxView = -1; wxTimes = new ArrayList<>(); wxField.clear(); wxWind.clear(); } return; }
+        if (wxView == cfg.view && frameNs - wxCheckNs < 20_000_000_000L) return;
+        wxCheckNs = frameNs;
+        long stamp = Prefs.get(ctx).getLong("wx_stamp", 0);
+        if (wxLoading || (wxView == cfg.view && stamp == wxStamp)) return;
+        wxLoading = true;
+        final int view = cfg.view; final long st = stamp;
+        decoder.execute(() -> {
+            List<Long> ts = WxStore.times(ctx, view);
+            java.util.Map<Long, byte[]> f = new java.util.HashMap<>(), w = new java.util.HashMap<>();
+            int[] wh = new int[2];
+            char sh = WxStore.sheet(view);
+            for (long t : ts) {
+                byte[] a = WxStore.load(ctx, t, sh, wh);
+                byte[] b = sh == 'w' ? a : WxStore.load(ctx, t, 'w', wh);
+                if (a != null && b != null) { f.put(t, a); w.put(t, b); }
+            }
+            List<Long> ok = new ArrayList<>(f.keySet());
+            java.util.Collections.sort(ok);
+            int W = wh[0], Hh = wh[1];
+            h.post(() -> {
+                wxLoading = false;
+                if (cfg.view != view) return;
+                wxTimes = ok; wxField.clear(); wxField.putAll(f); wxWind.clear(); wxWind.putAll(w);
+                wxView = view; wxStamp = st; wxUpA = wxUpB = -1; windTA = windTB = -1;
+                if (W > 0) { wxW = W; wxH = Hh; }
+                Log.i(TAG, "weather view " + view + ": " + ok.size() + " times on the phone");
+                kick();
+            });
+        });
+    }
+
+    private static int wxPalette(int view) {
+        switch (view) { case 10: case 11: return 0; case 12: return 1; case 13: return 3; case 14: return 4; case 15: return 5;
+            case 16: return 6; case 17: return 7; case 18: return 8; default: return 9; }
+    }
+
+    /** Pick the two sheets around time T, upload them if they changed, set the blend; then the streaks. */
+    private void applyWx(long T, double dtS) {
+        fr.streaks = null;
+        if (fr.mode < 10 || wxTimes.isEmpty()) return;
+        int n = wxTimes.size(), i = 0;
+        while (i < n - 2 && T >= wxTimes.get(i + 1)) i++;
+        long ta = wxTimes.get(i), tb = wxTimes.get(Math.min(i + 1, n - 1));
+        double mix = tb > ta ? Math.max(0, Math.min(1, (T - ta) / (double) (tb - ta))) : 0;
+        if (ta != wxUpA || tb != wxUpB) {
+            r.uploadWx(0, wxField.get(ta), wxW, wxH);
+            r.uploadWx(1, wxField.get(tb), wxW, wxH);
+            wxUpA = ta; wxUpB = tb;
+        }
+        fr.wxMix = (float) mix;
+        fr.wxChan = WxStore.channel(cfg.view);
+        fr.wxPal = wxPalette(cfg.view);
+        fr.wxClouds = cfg.view == 12 ? 0.22f : cfg.view == 16 ? 0.28f : 0.38f;
+        if (!cfg.streaks) return;
+        if (ta != windTA) { windA = decodeWind(wxWind.get(ta)); windTA = ta; }
+        if (tb != windTB) { windB = decodeWind(wxWind.get(tb)); windTB = tb; }
+        windMix = mix;
+        streaks.step(dtS, this::windAt, camLat, camLon);
+        fr.streaks = streaks.verts;
+        fr.streakAlpha = 0.55f * fr.fade;
+    }
+
+    private float[] decodeWind(byte[] rgb) {
+        if (rgb == null) return null;
+        int n = wxW * wxH;
+        float[] uv = new float[n * 2];
+        for (int k = 0; k < n; k++) {
+            uv[2 * k] = (rgb[3 * k] & 0xFF) / 255f * 100f - 50f;
+            uv[2 * k + 1] = (rgb[3 * k + 1] & 0xFF) / 255f * 100f - 50f;
+        }
+        return uv;
+    }
+
+    private void windAt(double lat, double lon, double[] out) {
+        out[0] = out[1] = 0;
+        if (windA == null || windB == null) return;
+        double x = ((lon + 180) / 360.0 % 1.0 + 1.0) % 1.0 * wxW - 0.5, y = (90 - lat) / 180.0 * wxH - 0.5;
+        int x0 = (int) Math.floor(x), y0 = Math.max(0, Math.min(wxH - 2, (int) Math.floor(y)));
+        double fx = x - x0, fy = Math.max(0, Math.min(1, y - y0));
+        int xa = ((x0 % wxW) + wxW) % wxW, xb = (xa + 1) % wxW;
+        for (int c = 0; c < 2; c++) {
+            double a = bil(windA, xa, xb, y0, fx, fy, c), b = bil(windB, xa, xb, y0, fx, fy, c);
+            out[c] = a + (b - a) * windMix;
+        }
+    }
+    private double bil(float[] g, int xa, int xb, int y0, double fx, double fy, int c) {
+        int w = wxW;
+        double v00 = g[2 * (y0 * w + xa) + c], v10 = g[2 * (y0 * w + xb) + c];
+        double v01 = g[2 * ((y0 + 1) * w + xa) + c], v11 = g[2 * ((y0 + 1) * w + xb) + c];
+        return (v00 * (1 - fx) + v10 * fx) * (1 - fy) + (v01 * (1 - fx) + v11 * fx) * fy;
     }
     private double lapseOffsetMs(long frameNs) {
         if (lapseNs == 0) return 0;
@@ -793,6 +898,10 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         }
         projectMarker(dist, cx, cy, radius);
         maybeLoadStorms(frameNs);
+        maybeLoadWx(frameNs);
+        double sdt = streakNs == 0 ? 0 : (frameNs - streakNs) / 1e9;
+        streakNs = frameNs;
+        applyWx(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, sdt);
         projectStorms(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, dist, cx, cy, radius);
         fr.labelAmt = labelAlpha(frameNs) * readyFade;
         fr.labelCx = width * 0.5f;
