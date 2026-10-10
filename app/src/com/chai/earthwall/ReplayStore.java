@@ -73,16 +73,22 @@ final class ReplayStore {
         // the newest frame's motion changes as the next frame arrives: refresh it every time
         try { write(new File(d, newest + "_f.png"), CloudUpdater.download(CloudUpdater.LIVE_URL + "frames/" + newest + "_f.png", 20_000)); }
         catch (Exception ignored) { }
-        // keep at most 24 h, and nothing older than the chosen length for this view
+        // keep at most 24 h, nothing older than the chosen length for this view, and only frames the server
+        // still lists (frames it has replaced, e.g. off-grid ones from before a rebuild, would play out of step)
+        java.util.Set<Long> listed = new java.util.HashSet<>();
+        for (long t : ts) listed.add(t);
+        int stale = 0;
         File[] all = d.listFiles();
         if (all != null) for (File f : all) {
             if (f.getName().equals("frames.json")) continue;
             try {
                 long t = Long.parseLong(f.getName().substring(0, f.getName().indexOf('_')));
+                if (!listed.contains(t)) { if (f.delete()) stale++; continue; }
                 boolean other = !f.getName().endsWith("_f.png") && !f.getName().endsWith(suffix(kind));
                 if (t < newest - 24 * H - 60_000 || (!other && t < newest - hours * H - 60_000)) f.delete();
             } catch (Exception e) { f.delete(); }
         }
+        if (stale > 0) Log.i(TAG, "replay: removed " + stale + " files of frames the server no longer lists");
         if (fetched > 0) Log.i(TAG, "replay: fetched " + fetched + " " + kind + " frames (" + kb + " KB); have " + available(c, kind, hours).size() + " for " + hours + " h");
     }
 

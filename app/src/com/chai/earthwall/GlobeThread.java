@@ -282,7 +282,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         double pos;                 // 0 .. n-1
         long lastNs, startNs;
         Images.Single prep;         // frame a + 2, being uploaded into C in slices
-        int prepIdx = -1, prepRow;
+        int prepIdx = -1, prepRow, holds;
         static final int ROWS_PER_FRAME = 256;
         ReplayPlayer(java.util.List<Long> ts, String kind, double durS, double[] weights, WakePrep pre) {
             t = new long[ts.size()];
@@ -337,7 +337,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             if (pos >= t.length - 1) return false;
             if (pos >= a + 1) {                                           // step to the next pair
                 boolean ready = prep != null && prepIdx == a + 2 && prepRow >= prep.h;
-                if (!ready) { pos = a + 0.999; return true; }              // next frame not in yet: hold briefly
+                if (!ready) { if (pos < a + 0.999) holds++; pos = a + 0.999; return true; }   // next frame not in yet: hold
                 r.rotateReplay();
                 a++;
                 r.uploadReplayFlow(flows[a] != null ? flows[a] : FlowEstimator.still());
@@ -359,6 +359,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         boolean go = replay.step(now);
         if (!go) {
             boolean played = replay.a >= 0;
+            Log.i(TAG, String.format(java.util.Locale.US, "replay done: %d frames in %.1f s, waited for a frame %d times",
+                    replay.t.length, (now - replay.startNs) / 1e9, replay.holds));
             long last = replay.t[replay.t.length - 1];
             replay.cancelled = true; replay = null; fr.replay = false;
             if (played) { tailNs = now; tailT = last; }                    // fade from its last frame into the live map
