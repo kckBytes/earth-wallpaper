@@ -32,6 +32,14 @@ uniform sampler2D uClouds;     // current cloud cover, single channel
 uniform sampler2D uCloudsPrev; // previous cloud cover
 uniform sampler2D uFlow;       // cloud motion for uClouds: RG8, deg/hour (east, north), 128 = still
 uniform sampler2D uFlowPrev;   // cloud motion for uCloudsPrev
+// weather views (uMode >= 10): a NOAA model field, two times blended, coloured by a palette row
+uniform sampler2D uWxA;        // RGB sheet at the earlier time
+uniform sampler2D uWxB;        // ... at the later time
+uniform sampler2D uPal;        // 256 x 16 palettes (RGBA, alpha = how much the colour covers the ground)
+uniform float uWxMix;          // 0..1 between the two times
+uniform int   uWxChan;         // 0..2 channel; 3 = wind speed from east/north; 4 = precipitation (rate + frozen share)
+uniform int   uWxPal;          // palette row
+uniform float uWxClouds;       // how much of the real (satellite) cloud cover to lay on top
 const float FLOW_MAX = 2.5;    // deg/hour at byte 255
 
 const float PI = 3.14159265359;
@@ -204,7 +212,7 @@ void main() {
         float water = tex(uWater, uv).r;
         vec2 shC = flowShift(uFlow, uv, uAdvect);
         vec2 shP = uCloudMix < 0.999 ? flowShift(uFlowPrev, uv, uAdvectPrev) : vec2(0.0);
-        float cl = uMode == 0 || uMode == 3 ? cloudCover(uv, shC, shP) : 0.0;
+        float cl = uMode == 0 || uMode == 3 || uMode >= 10 ? cloudCover(uv, shC, shP) : 0.0;
 
         // cloud shadow: sample the cloud layer offset toward the Sun
         vec3 east = normalize(vec3(-N.y, N.x, 0.0) + vec3(1e-6, 0.0, 0.0));
@@ -266,6 +274,31 @@ void main() {
                 surf = mix(vec3(grey) * 0.30 + vec3(0.01), sstColour(T) * 0.85, sea);
             }
             surf += vec3(0.24, 0.48, 1.0) * rim * 0.20;
+        } else if (uMode >= 10) {
+            // Ventusky-style weather layer: the field's colours over a muted globe, coastlines, real clouds faint on top
+            vec3 s = mix(textureLod(uWxA, uv, 0.0).rgb, textureLod(uWxB, uv, 0.0).rgb, uWxMix);
+            vec4 pc;
+            if (uWxChan == 3) {
+                vec2 w = s.rg * (255.0 / 255.0) * 100.0 - 50.0;
+                pc = textureLod(uPal, vec2(clamp(length(w) / 40.0, 0.0, 1.0), (float(uWxPal) + 0.5) / 16.0), 0.0);
+            } else if (uWxChan == 4) {
+                vec4 rain = textureLod(uPal, vec2(s.r, 1.5 / 16.0), 0.0), snow = textureLod(uPal, vec2(s.r, 2.5 / 16.0), 0.0);
+                pc = mix(rain, snow, smoothstep(0.35, 0.65, s.g));
+            } else {
+                float v = uWxChan == 0 ? s.r : uWxChan == 1 ? s.g : s.b;
+                pc = textureLod(uPal, vec2(v, (float(uWxPal) + 0.5) / 16.0), 0.0);
+                if (uWxPal == 9) pc.a *= water;                  // waves: sea only
+            }
+            float grey = dot(albedo, vec3(0.3, 0.5, 0.2));
+            vec3 base = mix(vec3(grey) * 0.20 + vec3(0.006), albedo * 0.08 + vec3(0.004, 0.010, 0.025), water);
+            float light = mix(0.50, 1.0, smoothstep(-0.18, 0.22, mu));   // soft day / night: it still reads as a globe
+            vec3 c = toLinear(pc.rgb) * 0.80;
+            surf = mix(base, c, pc.a) * light;
+            float w1 = tex(uWater, uv + gDx).r, w2 = tex(uWater, uv + gDy).r;
+            float coast = clamp((abs(w1 - water) + abs(w2 - water)) * 2.5, 0.0, 1.0);
+            surf = mix(surf, surf * 0.35, coast * 0.8);          // thin dark coastlines
+            surf = mix(surf, vec3(0.80) * light, cl * uWxClouds);
+            surf += vec3(0.24, 0.48, 1.0) * pow(1.0 - muV, 2.2) * 0.16;
         } else if (uMode == 3) {
             // night lights: the whole planet as seen at night, weather glowing faintly in infrared
             float Ln = tex(uLights, uv).r;

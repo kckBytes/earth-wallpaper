@@ -143,9 +143,16 @@ public class SettingsActivity extends Activity {
         String[] vn = {"Natural — true colour, live clouds", "Infrared — cloud-top temperature, day and night",
                 "Sea temperature — today's ocean surface", "Night lights — the whole planet after dark"};
         for (int i = 0; i < vn.length; i++) views.addView(radio(vn[i], 100 + i));
+        TextView wxh = text("Weather (NOAA model, every 3 h, Ventusky-style colours)", 13, true);
+        wxh.setAlpha(0.8f);
+        views.addView(wxh, lp(dp(10)));
+        String[] wn = {"Temperature", "Feels like", "Rain & snow", "Wind speed", "Wind gusts", "Air pressure",
+                "Thunderstorms", "Humidity", "Snow cover", "Waves"};
+        for (int i = 0; i < wn.length; i++) views.addView(radio(wn[i], 110 + i));
         views.check(100 + p.getInt(Prefs.VIEW, 0));
         views.setOnCheckedChangeListener((g, id) -> p.edit().putInt(Prefs.VIEW, id - 100).apply());
         col.addView(views, lp(dp(8)));
+        toggle("Wind streaks on the weather views", Prefs.STREAKS, true);
         TextView vHint = text("Infrared and sea temperature come from the live 5-satellite map. In infrared, white is cold "
                 + "high cloud and colours mark the coldest storm tops.", 12, false);
         vHint.setAlpha(0.6f);

@@ -161,6 +161,7 @@ final class CloudUpdater {
         boolean have = ("live:" + kind).equals(p.getString(Prefs.CLOUDS_SRC, "")) && cur(c).length() > 10_000
                 && res.equals(p.getString(Prefs.CLOUDS_RES, ""));
         syncStorms(c, p, now);
+        try { WxStore.sync(c, p, metered); } catch (Exception e) { Log.w(TAG, "weather sync failed: " + e.getMessage()); }
         if (!force && have && obs <= p.getLong(Prefs.CLOUDS_TIME, 0)) {
             p.edit().putLong(Prefs.CLOUDS_CHECKED, now).apply();
             try { ReplayStore.sync(c, p, metered); } catch (Exception e) { Log.w(TAG, "replay sync failed", e); }

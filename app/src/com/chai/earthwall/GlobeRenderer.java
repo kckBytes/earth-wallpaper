@@ -41,6 +41,10 @@ final class GlobeRenderer {
     private final float[] stormW = new float[MAX_STORMS], stormH = new float[MAX_STORMS],
             stormAx = new float[MAX_STORMS], stormAy = new float[MAX_STORMS];
     private int stormTexN;
+    // weather views: two model sheets (the times around "now") + palettes; wind streaks
+    private final int[] wxTex = new int[3];            // 0, 1 sheets; 2 palette
+    private int uWxMix, uWxChan, uWxPal, uWxClouds;
+    private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, streakVbo, streakIbo, streakIdx;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
     private int fbo, fboTex, fboW, fboH;
 
@@ -50,6 +54,8 @@ final class GlobeRenderer {
         float cx, cy, radius, camDist, gmst, cloudMix, fade, time, starDx, starDy;
         float markerX, markerY, markerAmt, markerSize;
         float labelAmt, labelCx, labelCy;          // city-name label (GL px, centre)
+        float wxMix, wxClouds; int wxChan, wxPal;  // weather view: blend between the two sheets, channel, palette row
+        java.nio.FloatBuffer streaks; float streakAlpha;   // wind streak points (null = none)
         int stormN;                                // storm labels: anchor (storm centre, GL px) and opacity
         final float[] stormX = new float[MAX_STORMS], stormY = new float[MAX_STORMS], stormAmt = new float[MAX_STORMS];
         boolean stars;
@@ -85,7 +91,8 @@ final class GlobeRenderer {
         uAdvect = loc("uAdvect"); uAdvectPrev = loc("uAdvectPrev");
         uMarkerPx = loc("uMarkerPx"); uMarkerAmt = loc("uMarkerAmt"); uMarkerSize = loc("uMarkerSize");
         uPass = loc("uPass"); uRect = loc("uRect"); uMode = loc("uMode");
-        String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev"};
+        uWxMix = loc("uWxMix"); uWxChan = loc("uWxChan"); uWxPal = loc("uWxPal"); uWxClouds = loc("uWxClouds");
+        String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev", "uWxA", "uWxB", "uPal"};
         for (int i = 0; i < samplers.length; i++) GLES20.glUniform1i(loc(samplers[i]), i);
 
         float[] tri = {0f, 0f, 1f, 0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f, 1f};   // unit quad
@@ -107,6 +114,40 @@ final class GlobeRenderer {
         }
         uploadFlow(5, FlowEstimator.still());
         uploadFlow(6, FlowEstimator.still());
+        GLES20.glGenTextures(3, wxTex, 0);
+        byte[] one = new byte[4 * 3];
+        for (int k = 0; k < 2; k++) uploadWx(k, one, 2, 2);
+        bind(wxTex[2]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, Palettes.W, Palettes.ROWS, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, Palettes.build());
+        clampLinear();
+        try {
+            int vs = compile(GLES20.GL_VERTEX_SHADER, readAsset(am, "streak.vert"));
+            int fs = compile(GLES20.GL_FRAGMENT_SHADER, readAsset(am, "streak.frag"));
+            streakProg = GLES20.glCreateProgram();
+            GLES20.glAttachShader(streakProg, vs); GLES20.glAttachShader(streakProg, fs);
+            GLES20.glBindAttribLocation(streakProg, 0, "aP");
+            GLES20.glLinkProgram(streakProg);
+            int[] ok2 = new int[1];
+            GLES20.glGetProgramiv(streakProg, GLES20.GL_LINK_STATUS, ok2, 0);
+            if (ok2[0] == 0) throw new IllegalStateException(GLES20.glGetProgramInfoLog(streakProg));
+            sView = GLES20.glGetUniformLocation(streakProg, "uView"); sCenter = GLES20.glGetUniformLocation(streakProg, "uCenter");
+            sRadius = GLES20.glGetUniformLocation(streakProg, "uRadius"); sCamDist = GLES20.glGetUniformLocation(streakProg, "uCamDist");
+            sRes = GLES20.glGetUniformLocation(streakProg, "uRes"); sAlpha = GLES20.glGetUniformLocation(streakProg, "uAlpha");
+            int[] bb = new int[2];
+            GLES20.glGenBuffers(2, bb, 0);
+            streakVbo = bb[0]; streakIbo = bb[1];
+            int n = WindStreaks.N, k = WindStreaks.K;
+            java.nio.ShortBuffer ib = ByteBuffer.allocateDirect(n * (k + 1) * 2).order(ByteOrder.nativeOrder()).asShortBuffer();
+            for (int i = 0; i < n; i++) { for (int j = 0; j < k; j++) ib.put((short) (i * k + j)); ib.put((short) 0xFFFF); }
+            ib.position(0);
+            streakIdx = n * (k + 1);
+            GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, streakIbo);
+            GLES20.glBufferData(GLES20.GL_ELEMENT_ARRAY_BUFFER, streakIdx * 2, ib, GLES20.GL_STATIC_DRAW);
+            GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, 0);
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, streakVbo);
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, n * k * 16, null, GLES20.GL_STREAM_DRAW);
+        } catch (Exception e) { Log.e(TAG, "streak shader failed", e); streakProg = 0; }
         try {
             int vs = compile(GLES20.GL_VERTEX_SHADER, readAsset(am, "globe.vert"));
             int fs = compile(GLES20.GL_FRAGMENT_SHADER, readAsset(am, "label.frag"));
@@ -209,6 +250,50 @@ final class GlobeRenderer {
         labelW = b.getWidth(); labelH = b.getHeight();
     }
 
+    /** A weather sheet (RGB bytes, w x h) into slot 0 (earlier time) or 1 (later). */
+    void uploadWx(int slot, byte[] rgb, int w, int h) {
+        bind(wxTex[slot]);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGB, w, h, 0, GLES20.GL_RGB, GLES20.GL_UNSIGNED_BYTE, ByteBuffer.wrap(rgb));
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    }
+
+    private void clampLinear() {
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    }
+
+    private void drawStreaks(Frame f) {
+        if (streakProg == 0 || f.streaks == null || f.streakAlpha <= 0.003f) return;
+        GLES20.glUseProgram(streakProg);
+        GLES20.glUniformMatrix3fv(sView, 1, false, f.view, 0);
+        GLES20.glUniform2f(sCenter, f.cx, f.cy);
+        GLES20.glUniform1f(sRadius, f.radius);
+        GLES20.glUniform1f(sCamDist, f.camDist);
+        GLES20.glUniform2f(sRes, f.w, f.h);
+        GLES20.glUniform1f(sAlpha, f.streakAlpha);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, streakVbo);
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, WindStreaks.N * WindStreaks.K * 16, f.streaks);
+        GLES20.glEnableVertexAttribArray(0);
+        GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, 0);
+        GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, streakIbo);
+        GLES20.glEnable(GLES30.GL_PRIMITIVE_RESTART_FIXED_INDEX);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glLineWidth(Math.max(1f, Math.min(2f, f.radius / 450f)));
+        GLES20.glDrawElements(GLES20.GL_LINE_STRIP, streakIdx, GLES20.GL_UNSIGNED_SHORT, 0);
+        GLES20.glDisable(GLES20.GL_BLEND);
+        GLES20.glDisable(GLES30.GL_PRIMITIVE_RESTART_FIXED_INDEX);
+        GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, 0);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);           // the quad, for the label passes
+        GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, 0);
+    }
+
     /** Replace the storm label textures; ax/ay = where the storm mark sits in each bitmap (px from top-left). */
     void setStormLabels(Bitmap[] b, float[] ax, float[] ay) {
         if (stormTexN > 0) GLES20.glDeleteTextures(stormTexN, stormTex, 0);
@@ -293,11 +378,13 @@ final class GlobeRenderer {
         if (off) GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo);
         GLES20.glViewport(0, 0, fw, fh);
         GLES20.glUseProgram(prog);
-        int[] units = f.replay
+        int[] units0 = f.replay
                 ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], rtex[rb], rtex[ra], rtex[3], rtex[3]}
                 : f.tail
                 ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], rtex[rb], tex[5 + cur], rtex[3]}
                 : new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], tex[3 + prev], tex[5 + cur], tex[5 + prev]};
+        int[] units = java.util.Arrays.copyOf(units0, 10);
+        units[7] = wxTex[0]; units[8] = wxTex[1]; units[9] = wxTex[2];
         for (int i = 0; i < units.length; i++) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, units[i]);
@@ -311,6 +398,10 @@ final class GlobeRenderer {
         GLES20.glUniform1f(uGmst, f.gmst);
         GLES20.glUniform1f(uCloudMix, f.replay ? f.replayMix : f.tail ? f.tailMix : f.cloudMix);
         GLES30.glUniform1i(uMode, f.mode);
+        GLES20.glUniform1f(uWxMix, f.wxMix);
+        GLES30.glUniform1i(uWxChan, f.wxChan);
+        GLES30.glUniform1i(uWxPal, f.wxPal);
+        GLES20.glUniform1f(uWxClouds, f.wxClouds);
         GLES20.glUniform1f(uFade, f.fade);
         GLES20.glUniform1f(uTime, f.time);
         GLES20.glUniform2f(uStarShift, f.starDx * s, f.starDy * s);
@@ -352,6 +443,7 @@ final class GlobeRenderer {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
             GLES20.glViewport(0, 0, f.w, f.h);
         }
+        drawStreaks(f);
         drawStorms(f);
         drawLabel(f);
     }
