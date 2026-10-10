@@ -160,6 +160,7 @@ final class CloudUpdater {
         String res = kind.equals("sst") ? "2048" : (metered && p.getBoolean(Prefs.HD_WIFI_ONLY, true)) ? "2048" : "4096";
         boolean have = ("live:" + kind).equals(p.getString(Prefs.CLOUDS_SRC, "")) && cur(c).length() > 10_000
                 && res.equals(p.getString(Prefs.CLOUDS_RES, ""));
+        syncStorms(c, p, now);
         if (!force && have && obs <= p.getLong(Prefs.CLOUDS_TIME, 0)) {
             p.edit().putLong(Prefs.CLOUDS_CHECKED, now).apply();
             try { ReplayStore.sync(c, p, metered); } catch (Exception e) { Log.w(TAG, "replay sync failed", e); }
@@ -191,6 +192,19 @@ final class CloudUpdater {
         CloudFrame f = new CloudFrame(fresh, flow, obs, kind);
         for (Sink s : sinks) s.onClouds(f);
         try { ReplayStore.sync(c, p, metered); } catch (Exception e) { Log.w(TAG, "replay sync failed", e); }
+    }
+
+    /** Active tropical cyclones with tracks (a few KB), at most every 20 min. */
+    private static void syncStorms(Context c, SharedPreferences p, long now) {
+        if (now - p.getLong("storms_checked", 0) < 20 * 60_000L) return;
+        try {
+            byte[] b = download(LIVE_BASE + "storms.json?t=" + now, 20_000);
+            new org.json.JSONObject(new String(b, "UTF-8"));                     // validate
+            File tmp = new File(c.getFilesDir(), "storms.tmp"), dst = new File(c.getFilesDir(), "storms.json");
+            try (OutputStream out = new FileOutputStream(tmp)) { out.write(b); }
+            if (!tmp.renameTo(dst)) { dst.delete(); tmp.renameTo(dst); }
+            p.edit().putLong("storms_checked", now).apply();
+        } catch (Exception e) { Log.w(TAG, "storms: " + e.getMessage()); }
     }
 
     private static void fetch(Context c, SharedPreferences p, boolean metered, boolean force) throws Exception {

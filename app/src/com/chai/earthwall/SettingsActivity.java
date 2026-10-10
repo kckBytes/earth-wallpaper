@@ -103,6 +103,7 @@ public class SettingsActivity extends Activity {
 
         header("View");
         toggle("Mark my city", Prefs.MARKER, true);
+        toggle("Storm names (hurricanes, typhoons, cyclones)", Prefs.STORMS, true);
         slider("Globe size", Prefs.SIZE, 1f, 70, 130, 0.01f, "%");
         slider("Height on screen", Prefs.HEIGHT, Prefs.DEF_HEIGHT, 10, 60, 0.01f, "%");
 
