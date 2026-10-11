@@ -46,7 +46,7 @@ final class GlobeRenderer {
     private int uWxMix, uWxChan, uWxPal, uWxClouds, uWxAmt;
     private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, sColor, sRound, sPoint, streakVbo, streakIbo, streakIdx, dotVbo;
     static final int MAX_DOTS = 4096;
-    private int auroraTex, uAuroraAmt;
+    private int auroraTex, uAuroraAmt, bordersTex, uBorderAmt;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
     private int fbo, fboTex, fboW, fboH;
 
@@ -59,7 +59,7 @@ final class GlobeRenderer {
         float wxMix, wxClouds, wxAmt; int wxChan, wxPal;  // weather view: blend between the two sheets, channel, palette row
         java.nio.FloatBuffer streaks; float streakAlpha;   // wind streak points (null = none)
         java.nio.FloatBuffer fireDots, boltDots; int fireN, boltN;   // fires / lightning: xyz + opacity per dot
-        float auroraAmt;
+        float auroraAmt, borderAmt;
         int stormN;                                // storm labels: anchor (storm centre, GL px) and opacity
         final float[] stormX = new float[MAX_STORMS], stormY = new float[MAX_STORMS], stormAmt = new float[MAX_STORMS];
         boolean stars;
@@ -96,8 +96,8 @@ final class GlobeRenderer {
         uMarkerPx = loc("uMarkerPx"); uMarkerAmt = loc("uMarkerAmt"); uMarkerSize = loc("uMarkerSize");
         uPass = loc("uPass"); uRect = loc("uRect"); uMode = loc("uMode");
         uWxMix = loc("uWxMix"); uWxChan = loc("uWxChan"); uWxPal = loc("uWxPal"); uWxClouds = loc("uWxClouds"); uWxAmt = loc("uWxAmt");
-        uAuroraAmt = loc("uAuroraAmt");
-        String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev", "uWxA", "uWxB", "uPal", "uAurora"};
+        uAuroraAmt = loc("uAuroraAmt"); uBorderAmt = loc("uBorderAmt");
+        String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev", "uWxA", "uWxB", "uPal", "uAurora", "uBorders"};
         for (int i = 0; i < samplers.length; i++) GLES20.glUniform1i(loc(samplers[i]), i);
 
         float[] tri = {0f, 0f, 1f, 0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f, 1f};   // unit quad
@@ -122,6 +122,9 @@ final class GlobeRenderer {
         GLES20.glGenTextures(3, wxTex, 0);
         int[] at = new int[1]; GLES20.glGenTextures(1, at, 0); auroraTex = at[0];
         uploadAurora(new byte[4], 2, 2);
+        int[] bt = new int[1]; GLES20.glGenTextures(1, bt, 0); bordersTex = bt[0];
+        ByteBuffer none = ByteBuffer.allocateDirect(4); none.position(0);
+        uploadBorders(none, 2, 2);
         byte[] one = new byte[4 * 3];
         for (int k = 0; k < 2; k++) uploadWx(k, one, 2, 2);
         bind(wxTex[2]);
@@ -271,6 +274,14 @@ final class GlobeRenderer {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    }
+
+    /** Country borders + coastlines line mask (R8, equirectangular, mipmapped so lines stay thin and smooth). */
+    void uploadBorders(ByteBuffer l8, int w, int h) {
+        bind(bordersTex);
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R8, w, h, 0, GLES30.GL_RED, GLES20.GL_UNSIGNED_BYTE, l8);
+        finishTexture(true);
     }
 
     /** NOAA aurora forecast grid (L8, w x h, lon -180 at the left, north at the top). */
@@ -443,8 +454,8 @@ final class GlobeRenderer {
                 : f.tail
                 ? new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], rtex[rb], tex[5 + cur], rtex[3]}
                 : new int[]{tex[DAY], tex[LIGHTS], tex[WATER], tex[3 + cur], tex[3 + prev], tex[5 + cur], tex[5 + prev]};
-        int[] units = java.util.Arrays.copyOf(units0, 11);
-        units[7] = wxTex[0]; units[8] = wxTex[1]; units[9] = wxTex[2]; units[10] = auroraTex;
+        int[] units = java.util.Arrays.copyOf(units0, 12);
+        units[7] = wxTex[0]; units[8] = wxTex[1]; units[9] = wxTex[2]; units[10] = auroraTex; units[11] = bordersTex;
         for (int i = 0; i < units.length; i++) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, units[i]);
@@ -464,6 +475,7 @@ final class GlobeRenderer {
         GLES20.glUniform1f(uWxClouds, f.wxClouds);
         GLES20.glUniform1f(uWxAmt, f.wxAmt);
         GLES20.glUniform1f(uAuroraAmt, f.auroraAmt);
+        GLES20.glUniform1f(uBorderAmt, f.borderAmt);
         GLES20.glUniform1f(uFade, f.fade);
         GLES20.glUniform1f(uTime, f.time);
         GLES20.glUniform2f(uStarShift, f.starDx * s, f.starDy * s);

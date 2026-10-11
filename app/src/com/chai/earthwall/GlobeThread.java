@@ -780,6 +780,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 h.post(() -> r.uploadSingle(GlobeRenderer.LIGHTS, l.data, l.w, l.h));
                 Images.Single w = Images.decodeSingle(ctx.getAssets().open("water.jpg"));
                 h.post(() -> r.uploadSingle(GlobeRenderer.WATER, w.data, w.w, w.h));
+                Images.Single bd = Images.decodeSingle(ctx.getAssets().open("borders.png"));
+                h.post(() -> { r.uploadBorders(bd.data, bd.w, bd.h); kick(); });
                 CloudUpdater.CloudFrame c = CloudUpdater.loadInitial(ctx);
                 h.post(() -> { r.pushClouds(c); dataKind = c.kind; cloudFadeNs = 0; kick(); });
             } catch (Exception e) { Log.e(TAG, "texture load", e); }
@@ -884,6 +886,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         fr.w = width; fr.h = height; fr.cx = cx; fr.cy = cy; fr.radius = radius; fr.camDist = dist;
         fr.cloudMix = cloudMix; fr.nowMs = nowMs; fr.cloudNowMs = nowMs + (long) lapseOffsetMs(frameNs);
         fr.mode = shaderMode();
+        fr.borderAmt = cfg.borders ? 1f : 0f;
         fr.fade = readyFade * (mode == MODE_WALLPAPER ? (0.25f + 0.75f * e) : 1f)
                 * (1f - 0.22f * zoomOut) * (1f - 0.30f * home);
         fr.time = (float) (t % 3600.0);

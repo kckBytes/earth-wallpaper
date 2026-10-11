@@ -43,6 +43,8 @@ uniform float uWxClouds;       // how much of the real (satellite) cloud cover t
 uniform float uWxAmt;          // Earth Next: weather overlay strength over the base view (0 = off, 1 = full map)
 uniform sampler2D uAurora;     // NOAA aurora forecast: chance of aurora overhead (0..1), 360 x 181
 uniform float uAuroraAmt;      // 0 = off
+uniform sampler2D uBorders;    // country borders + coastlines, line mask (Natural Earth)
+uniform float uBorderAmt;      // 0 = off
 const float FLOW_MAX = 2.5;    // deg/hour at byte 255
 
 const float PI = 3.14159265359;
@@ -288,6 +290,9 @@ void main() {
                  + (albedo * 0.006 + vec3(cl * cl) * 0.06) * vec3(0.60, 0.72, 1.0)
                  + vec3(0.10, 0.20, 0.45) * pow(1.0 - muV, 2.5) * 0.12 + aurora * 1.6;
         }
+        // country borders + coastlines: thin light lines, dimmer on the night side
+        float bl = uBorderAmt > 0.0 ? tex(uBorders, uv).r * uBorderAmt : 0.0;
+        surf = mix(surf, vec3(0.85) * mix(0.30, 1.0, smoothstep(-0.10, 0.20, mu)), bl * 0.30);
         if (uWxAmt > 0.0) {
             // weather layer over whichever base is chosen: at full strength it is the Ventusky-style map,
             // below that the real Earth shows through
@@ -304,6 +309,7 @@ void main() {
                 float v = uWxChan == 0 ? s.r : uWxChan == 1 ? s.g : s.b;
                 pc = textureLod(uPal, vec2(v, (float(uWxPal) + 0.5) / 16.0), 0.0);
                 if (uWxPal == 9) pc.a *= water;                  // waves: sea only
+                if (uWxPal == 8) pc.a *= 1.0 - water;            // snow depth: land only (the model has no snow at sea)
             }
             float grey = dot(albedo, vec3(0.3, 0.5, 0.2));
             vec3 base = mix(vec3(grey) * 0.20 + vec3(0.006), albedo * 0.08 + vec3(0.004, 0.010, 0.025), water);
@@ -312,7 +318,8 @@ void main() {
             vec3 wxs = mix(base, c, pc.a) * light;
             float w1 = tex(uWater, uv + gDx).r, w2 = tex(uWater, uv + gDy).r;
             float coast = clamp((abs(w1 - water) + abs(w2 - water)) * 2.5, 0.0, 1.0);
-            wxs = mix(wxs, wxs * 0.35, coast * 0.8);          // thin dark coastlines
+            wxs = mix(wxs, wxs * 0.35, coast * 0.8 * (1.0 - uBorderAmt));   // dark coastlines when borders are off
+            wxs = mix(wxs, vec3(0.95) * light, bl * 0.60);    // light borders + coastlines, Ventusky-style
             wxs = mix(wxs, vec3(0.80) * light, cl * uWxClouds);
             wxs += vec3(0.24, 0.48, 1.0) * pow(1.0 - muV, 2.2) * 0.16;
             // below ~65 %: tint the real Earth with the layer's colours only (no muted base, nights stay real);
