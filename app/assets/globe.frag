@@ -326,12 +326,14 @@ void main() {
                 // weather map: fade from the base view to the full Ventusky-style map (100 % = the map alone)
                 surf = mix(surf, wxs, uWxAmt);
             } else {
-                // on the real Earth: the layer's colour replaces the ground under the real clouds, lit by the real
-                // Sun (dark at night, a faint glow so it still reads); clouds, city lights and atmosphere stay
-                float a = clamp(pc.a * uWxAmt * 1.15, 0.0, 1.0) * (1.0 - cl);
-                vec3 wc = toLinear(pc.rgb);
-                vec3 litW = wc * (diff * shadow * 1.05 * sunCol + 0.035 * night);
-                surf += (litW - ground * sunCol) * a;
+                // on the real Earth: the colour follows day and night but never disappears. Daytime: full colour,
+                // gently shaded by the Sun, showing through thin cloud (thick cloud stays on top). Night: a soft
+                // readable glow. Twilight blends the two.
+                float dayness = smoothstep(-0.10, 0.25, mu);
+                float lightW = mix(0.16, 0.65 + 0.45 * sqrt(max(diff, 0.0)), dayness);
+                vec3 wc = toLinear(pc.rgb) * lightW * mix(vec3(1.0), sunCol, dayness);
+                float a = clamp(pc.a * uWxAmt * 1.2, 0.0, 1.0) * (1.0 - 0.7 * cl * cl);
+                surf = mix(surf, wc, a);
             }
         }
         // borders drawn last, the same on every view and layer: a dark halo then a bright core, so they read
