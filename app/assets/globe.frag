@@ -290,9 +290,9 @@ void main() {
                  + (albedo * 0.006 + vec3(cl * cl) * 0.06) * vec3(0.60, 0.72, 1.0)
                  + vec3(0.10, 0.20, 0.45) * pow(1.0 - muV, 2.5) * 0.12 + aurora * 1.6;
         }
-        // country borders + coastlines: thin light lines, dimmer on the night side
-        float bl = uBorderAmt > 0.0 ? tex(uBorders, uv).r * uBorderAmt : 0.0;
-        surf = mix(surf, vec3(0.85) * mix(0.30, 1.0, smoothstep(-0.10, 0.20, mu)), bl * 0.30);
+        // country borders + coastlines (Natural Earth line mask): line core + a wider, blurrier sample for the halo
+        float bl = uBorderAmt > 0.0 ? tex(uBorders, uv).r : 0.0;
+        float bh = uBorderAmt > 0.0 ? textureGrad(uBorders, uv, gDx * 3.5, gDy * 3.5).r : 0.0;
         if (uWxAmt > 0.0) {
             // weather layer over whichever base is chosen: at full strength it is the Ventusky-style map,
             // below that the real Earth shows through
@@ -319,7 +319,6 @@ void main() {
             float w1 = tex(uWater, uv + gDx).r, w2 = tex(uWater, uv + gDy).r;
             float coast = clamp((abs(w1 - water) + abs(w2 - water)) * 2.5, 0.0, 1.0);
             wxs = mix(wxs, wxs * 0.35, coast * 0.8 * (1.0 - uBorderAmt));   // dark coastlines when borders are off
-            wxs = mix(wxs, vec3(0.95) * light, bl * 0.60);    // light borders + coastlines, Ventusky-style
             wxs = mix(wxs, vec3(0.80) * light, cl * uWxClouds);
             wxs += vec3(0.24, 0.48, 1.0) * pow(1.0 - muV, 2.2) * 0.16;
             // below ~65 %: tint the real Earth with the layer's colours only (no muted base, nights stay real);
@@ -327,6 +326,13 @@ void main() {
             float a = clamp(pc.a * uWxAmt * 1.25, 0.0, 1.0);
             vec3 tinted = mix(surf, c * light, a);
             surf = mix(tinted, wxs, smoothstep(0.65, 1.0, uWxAmt));
+        }
+        // borders drawn last, the same on every view and layer: a dark halo then a bright core, so they read
+        // on dark land (like the waves view), on bright weather colours and on the real Earth alike
+        if (uBorderAmt > 0.0) {
+            float bright = mix(0.55, 1.0, smoothstep(-0.10, 0.20, mu));
+            surf = mix(surf, surf * 0.12, clamp(bh * 2.4, 0.0, 1.0) * 0.60 * uBorderAmt);
+            surf = mix(surf, vec3(0.95) * bright, clamp(bl * 1.5, 0.0, 1.0) * 0.88 * uBorderAmt);
         }
         col = mix(col, surf, cov);
     }
