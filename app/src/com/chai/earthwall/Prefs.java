@@ -24,6 +24,10 @@ final class Prefs {
     static final String MARKER = "marker";
     static final String STORMS = "storm_labels";
     static final String STREAKS = "wind_streaks";
+    // streak look (tuning panel): widths in px, strengths 0..1
+    static final String S_DAY_W = "streak_day_w", S_NIGHT_W = "streak_night_w", S_OUT_W = "streak_out_w",
+            S_OUT_A = "streak_out_a", S_DARK = "streak_dark";
+    static final float DEF_S_DAY_W = 3.5f, DEF_S_NIGHT_W = 1.6f, DEF_S_OUT_W = 1.0f, DEF_S_OUT_A = 0.5f, DEF_S_DARK = 1.0f;
     static final String TWIST = "twist";
     static final String FLIP = "flip";
     static final String KNOCK = "knock_zoom";
@@ -109,6 +113,7 @@ final class Prefs {
         boolean horizon, motion, parallax = true, marker = true, stars = true, storms = true, streaks = true;
         int view = 0, replayH = 12;
         int wx = DEF_WX, mask = MASK_ALL; float wxAmt = DEF_WX_AMT; boolean borders = true; int wxStyle = 0;
+        float sDayW = DEF_S_DAY_W, sNightW = DEF_S_NIGHT_W, sOutW = DEF_S_OUT_W, sOutA = DEF_S_OUT_A, sDark = DEF_S_DARK;
     }
 
     static Config read(SharedPreferences p) {
@@ -130,6 +135,8 @@ final class Prefs {
         c.marker = p.getBoolean(MARKER, true);
         c.storms = p.getBoolean(STORMS, true);
         c.streaks = p.getBoolean(STREAKS, true);
+        c.sDayW = p.getFloat(S_DAY_W, DEF_S_DAY_W); c.sNightW = p.getFloat(S_NIGHT_W, DEF_S_NIGHT_W);
+        c.sOutW = p.getFloat(S_OUT_W, DEF_S_OUT_W); c.sOutA = p.getFloat(S_OUT_A, DEF_S_OUT_A); c.sDark = p.getFloat(S_DARK, DEF_S_DARK);
         c.stars = p.getBoolean(STARS, true);
         c.view = Math.max(0, Math.min(3, p.getInt(VIEW, 0)));
         c.wx = p.getInt(WX, DEF_WX);

@@ -177,6 +177,12 @@ public class SettingsActivity extends Activity {
 
         sub("3 · Motion");
         toggle("Wind streaks — on any Earth, with or without a weather layer", Prefs.STREAKS, true);
+        col.addView(text("Streak look (tune by eye on the globe; day = sunlit side, night = dark side)", 12, false), lp(dp(10)));
+        sliderF("Day width", Prefs.S_DAY_W, Prefs.DEF_S_DAY_W, 1f, 7f, 0.1f, " px");
+        sliderF("Day darkness", Prefs.S_DARK, Prefs.DEF_S_DARK, 0f, 1f, 0.05f, "");
+        sliderF("Day outline width", Prefs.S_OUT_W, Prefs.DEF_S_OUT_W, 0f, 3f, 0.1f, " px");
+        sliderF("Day outline strength", Prefs.S_OUT_A, Prefs.DEF_S_OUT_A, 0f, 1f, 0.05f, "");
+        sliderF("Night width", Prefs.S_NIGHT_W, Prefs.DEF_S_NIGHT_W, 0.8f, 4f, 0.1f, " px");
 
         sub("4 · Labels");
         toggle("Country borders & coastlines", Prefs.BORDERS, true);
@@ -412,6 +418,28 @@ public class SettingsActivity extends Activity {
     }
 
     /** Integer seek bar over [min, max]; stored value = progress * unit (so % sliders store 0.7..1.3). */
+    /** A slider over a float range, showing the real value (e.g. "Day width: 3.5 px"). */
+    private void sliderF(String label, String key, float def, float min, float max, float step, String suffix) {
+        TextView t = text("", 14, false);
+        col.addView(t, lp(dp(8)));
+        SeekBar sb = new SeekBar(this);
+        int steps = Math.round((max - min) / step);
+        sb.setMax(steps);
+        float cur = p.getFloat(key, def);
+        sb.setProgress(Math.round((cur - min) / step));
+        t.setText(label + ": " + String.format(java.util.Locale.US, step < 0.1f ? "%.2f" : "%.1f", cur) + suffix);
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int v, boolean user) {
+                float val = min + v * step;
+                t.setText(label + ": " + String.format(java.util.Locale.US, step < 0.1f ? "%.2f" : "%.1f", val) + suffix);
+                if (user) p.edit().putFloat(key, val).apply();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { }
+            @Override public void onStopTrackingTouch(SeekBar s) { }
+        });
+        col.addView(sb, lp(0));
+    }
+
     private void slider(String label, String key, float def, int min, int max, float unit, String suffix) {
         TextView t = text("", 14, false);
         col.addView(t, lp(dp(14)));

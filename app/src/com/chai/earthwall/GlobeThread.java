@@ -455,6 +455,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         streaks.step(dtS, this::windAt, camLat, camLon);
         fr.streaks = streaks.verts;
         fr.streakAlpha = (0.38f + 0.17f * fr.wxAmt) * fr.fade;   // a little softer over the real Earth
+        fr.sDayW = cfg.sDayW; fr.sNightW = cfg.sNightW; fr.sOutW = cfg.sOutW; fr.sOutA = cfg.sOutA; fr.sDark = cfg.sDark;
     }
 
     private float[] decodeWind(byte[] rgb) {
