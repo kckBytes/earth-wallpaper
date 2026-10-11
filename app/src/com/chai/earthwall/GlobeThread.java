@@ -1139,6 +1139,24 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         float subH = line2.isEmpty() ? 0 : fs.descent - fs.ascent;
         int w = (int) Math.ceil(pad * 2 + gr * 2 + gap + Math.max(name.measureText(s.name), sub.measureText(line2)));
         int h = (int) Math.ceil(pad * 2 + nameH + subH);
+        // Man-made things in orbit or on the way up: Saab cockpit green with a black outline (Life OS Cockpit colours).
+        boolean manMade = s.type.equals("sat") || s.type.equals("camera") || s.type.equals("launch");
+        Paint nameOut = null, subOut = null;
+        if (manMade) {
+            name.clearShadowLayer(); sub.clearShadowLayer();
+            name.setColor(0xFF5CFF86);                           // the LCD green
+            sub.setColor(0xFFCFF5D6);                            // phosphor text green
+            nameOut = new Paint(name);
+            nameOut.setColor(0xFF000000);
+            nameOut.setStyle(Paint.Style.STROKE);
+            nameOut.setStrokeJoin(Paint.Join.ROUND);
+            nameOut.setStrokeWidth(2.6f * d);
+            subOut = new Paint(sub);
+            subOut.setColor(0xFF000000);
+            subOut.setStyle(Paint.Style.STROKE);
+            subOut.setStrokeJoin(Paint.Join.ROUND);
+            subOut.setStrokeWidth(2.2f * d);
+        }
         Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         float gx = pad + gr, gy = pad + nameH * 0.5f;
@@ -1148,8 +1166,19 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         g.setStrokeWidth(1.6f * d);
         g.setStrokeCap(Paint.Cap.ROUND);
         g.setStrokeJoin(Paint.Join.ROUND);
-        g.setShadowLayer(3 * d, 0, 0, 0xC0000000);
+        Paint[] glyphPasses;
+        if (manMade) {
+            Paint go = new Paint(g);                             // black outline under the green glyph
+            go.setColor(0xFF000000);
+            go.setStrokeWidth(1.6f * d + 2.4f * d);
+            g.setColor(0xFF5CFF86);
+            glyphPasses = new Paint[]{go, g};
+        } else {
+            g.setShadowLayer(3 * d, 0, 0, 0xC0000000);
+            glyphPasses = new Paint[]{g};
+        }
         android.graphics.Path p = new android.graphics.Path();
+        for (Paint gp : glyphPasses) { g = gp; p.reset();
         switch (s.type) {
             case "volcano":                                                // a cone
                 p.moveTo(gx - gr, gy + gr * 0.8f); p.lineTo(gx - gr * 0.25f, gy - gr * 0.6f);
@@ -1194,9 +1223,14 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 c.drawArc(arm, south ? 180 : 0, south ? 75 : -75, false, g);
             }
         }
+        }
         float tx = pad + gr * 2 + gap;
+        if (nameOut != null) c.drawText(s.name, tx, pad - fn.ascent, nameOut);
         c.drawText(s.name, tx, pad - fn.ascent, name);
-        if (!line2.isEmpty()) c.drawText(line2, tx, pad + nameH - fs.ascent, sub);
+        if (!line2.isEmpty()) {
+            if (subOut != null) c.drawText(line2, tx, pad + nameH - fs.ascent, subOut);
+            c.drawText(line2, tx, pad + nameH - fs.ascent, sub);
+        }
         ax[i] = gx; ay[i] = gy;
         return b;
     }

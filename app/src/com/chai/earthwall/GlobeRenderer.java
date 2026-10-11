@@ -378,6 +378,7 @@ final class GlobeRenderer {
         GLES30.glVertexAttribDivisor(1, 0); GLES30.glVertexAttribDivisor(2, 0);   // leave state as the other passes expect
         GLES20.glDisableVertexAttribArray(1); GLES20.glDisableVertexAttribArray(2);
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);           // the quad, for the label passes
+        GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, 0);   // re-point attribute 0 at it (pointers keep the old buffer)
         return true;
     }
 
