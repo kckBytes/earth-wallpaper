@@ -444,6 +444,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         fr.wxMix = (float) mix;
         boolean overlay = cfg.wx >= 10 && wxView == cfg.wx;
         fr.wxAmt = overlay ? Math.max(0f, Math.min(1f, cfg.wxAmt)) : 0f;
+        fr.wxStyle = cfg.wxStyle;
         fr.wxChan = WxStore.channel(wxView);
         fr.wxPal = wxPalette(wxView);
         fr.wxClouds = wxView == 12 ? 0.22f : wxView == 16 ? 0.28f : 0.38f;

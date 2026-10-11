@@ -163,7 +163,17 @@ public class SettingsActivity extends Activity {
         wx.check(w0 >= 10 ? 300 + w0 : 299);
         wx.setOnCheckedChangeListener((g, id) -> p.edit().putInt(Prefs.WX, id == 299 ? -1 : id - 300).apply());
         col.addView(wx, lp(dp(4)));
-        slider("Weather strength (100% = full weather map)", Prefs.WX_AMT, Prefs.DEF_WX_AMT, 10, 100, 0.01f, "%");
+        RadioGroup style = new RadioGroup(this);
+        style.addView(radio("On the real Earth — keeps clouds, sunlight and night", 400));
+        style.addView(radio("Weather map — full colour, like Ventusky", 401));
+        style.check(400 + p.getInt(Prefs.WX_STYLE, 0));
+        style.setOnCheckedChangeListener((g, id) -> p.edit().putInt(Prefs.WX_STYLE, id - 400).apply());
+        col.addView(style, lp(dp(8)));
+        slider("Weather strength", Prefs.WX_AMT, Prefs.DEF_WX_AMT, 10, 100, 0.01f, "%");
+        TextView sh = text("On the real Earth: how strongly the colours show through the gaps in the clouds. "
+                + "Weather map: how much of the map covers the Earth (100% = the map alone).", 12, false);
+        sh.setAlpha(0.6f);
+        col.addView(sh, lp(dp(2)));
 
         sub("3 · Motion");
         toggle("Wind streaks — on any Earth, with or without a weather layer", Prefs.STREAKS, true);
