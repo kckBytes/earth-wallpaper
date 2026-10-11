@@ -31,7 +31,38 @@ final class Prefs {
     static final String HD_WIFI_ONLY = "hd_wifi_only";
     static final String LIVE_CLOUDS = "live_clouds";   // true: 5-satellite stitch every 10 min (earth-live); false: 3-hourly composite
     static final String CLOUDS_SRC = "clouds_src";
-    static final String VIEW = "view_mode";             // 0 natural, 1 infrared, 2 sea temperature, 3 night lights
+    static final String VIEW = "view_mode";             // base Earth: 0 natural, 1 infrared, 2 sea temperature, 3 night lights
+    // Earth Next: layers stacked on the base
+    static final String WX = "wx_layer";                // weather overlay: -1 none, 10..19 = temperature .. waves
+    static final String WX_AMT = "wx_amount";           // overlay strength 0..1 (1 = full Ventusky-style map)
+    static final String MASK = "layer_mask";            // which labels / dots are shown (bits below)
+    static final int L_STORMS = 1, L_SYSTEMS = 2, L_QUAKES = 4, L_VOLCANOES = 8, L_FIRES = 16, L_FLOODS = 32,
+            L_LAUNCHES = 64, L_STATIONS = 128, L_CAMERAS = 256, D_LIGHTNING = 512, D_FIRES = 1024, D_AURORA = 2048;
+    static final int MASK_ALL = 4095;
+    static final int DEF_WX = 10;                       // first look: temperature at 35% over the real Earth
+    static final float DEF_WX_AMT = 0.35f;
+
+    /** Label category for a storms.json / sats / cameras entry. */
+    static boolean labelOn(int mask, String type) {
+        int bit;
+        switch (type) {
+            case "storm": bit = L_STORMS; break;
+            case "low": case "high": bit = L_SYSTEMS; break;
+            case "quake": bit = L_QUAKES; break;
+            case "volcano": bit = L_VOLCANOES; break;
+            case "fire": bit = L_FIRES; break;
+            case "flood": bit = L_FLOODS; break;
+            case "launch": bit = L_LAUNCHES; break;
+            case "sat": bit = L_STATIONS; break;
+            case "camera": bit = L_CAMERAS; break;
+            default: bit = L_STORMS;
+        }
+        return (mask & bit) != 0;
+    }
+
+    /** Which weather data the phone must keep: the overlay's sheet, or just the wind for streaks; -1 = none. */
+    static int wxId(int wx, boolean streaks) { return wx >= 10 ? wx : streaks ? 13 : -1; }
+    static int wxId(SharedPreferences p) { return wxId(p.getInt(WX, DEF_WX), p.getBoolean(STREAKS, true)); }
     static final String REPLAY_H = "replay_hours";      // back triple-tap replay length
     static final int[] REPLAY_CHOICES = {3, 6, 9, 12, 18, 24};
     static final String REFRESH = "refresh_token";
@@ -75,6 +106,7 @@ final class Prefs {
         float size = 1f, height = DEF_HEIGHT, gain = DEF_GAIN;
         boolean horizon, motion, parallax = true, marker = true, stars = true, storms = true, streaks = true;
         int view = 0, replayH = 12;
+        int wx = DEF_WX, mask = MASK_ALL; float wxAmt = DEF_WX_AMT;
     }
 
     static Config read(SharedPreferences p) {
@@ -97,7 +129,11 @@ final class Prefs {
         c.storms = p.getBoolean(STORMS, true);
         c.streaks = p.getBoolean(STREAKS, true);
         c.stars = p.getBoolean(STARS, true);
-        c.view = p.getInt(VIEW, 0);
+        c.view = Math.max(0, Math.min(3, p.getInt(VIEW, 0)));
+        c.wx = p.getInt(WX, DEF_WX);
+        c.wxAmt = p.getFloat(WX_AMT, DEF_WX_AMT);
+        c.mask = p.getInt(MASK, MASK_ALL);
+        c.storms = (c.mask & 511) != 0;
         c.replayH = p.getInt(REPLAY_H, 12);
         return c;
     }

@@ -48,7 +48,7 @@ final class WxStore {
     }
 
     static void sync(Context c, SharedPreferences p, boolean metered) throws Exception {
-        int view = p.getInt(Prefs.VIEW, 0);
+        int view = Prefs.wxId(p);
         if (view < 10) return;
         long now = System.currentTimeMillis();
         if (now - p.getLong("wx_checked", 0) < 15 * 60_000L && p.getInt("wx_view", -1) == view) return;

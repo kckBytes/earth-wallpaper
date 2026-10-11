@@ -43,7 +43,7 @@ final class GlobeRenderer {
     private int stormTexN;
     // weather views: two model sheets (the times around "now") + palettes; wind streaks
     private final int[] wxTex = new int[3];            // 0, 1 sheets; 2 palette
-    private int uWxMix, uWxChan, uWxPal, uWxClouds;
+    private int uWxMix, uWxChan, uWxPal, uWxClouds, uWxAmt;
     private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, sColor, sRound, sPoint, streakVbo, streakIbo, streakIdx, dotVbo;
     static final int MAX_DOTS = 4096;
     private int auroraTex, uAuroraAmt;
@@ -56,7 +56,7 @@ final class GlobeRenderer {
         float cx, cy, radius, camDist, gmst, cloudMix, fade, time, starDx, starDy;
         float markerX, markerY, markerAmt, markerSize;
         float labelAmt, labelCx, labelCy;          // city-name label (GL px, centre)
-        float wxMix, wxClouds; int wxChan, wxPal;  // weather view: blend between the two sheets, channel, palette row
+        float wxMix, wxClouds, wxAmt; int wxChan, wxPal;  // weather view: blend between the two sheets, channel, palette row
         java.nio.FloatBuffer streaks; float streakAlpha;   // wind streak points (null = none)
         java.nio.FloatBuffer fireDots, boltDots; int fireN, boltN;   // fires / lightning: xyz + opacity per dot
         float auroraAmt;
@@ -95,7 +95,7 @@ final class GlobeRenderer {
         uAdvect = loc("uAdvect"); uAdvectPrev = loc("uAdvectPrev");
         uMarkerPx = loc("uMarkerPx"); uMarkerAmt = loc("uMarkerAmt"); uMarkerSize = loc("uMarkerSize");
         uPass = loc("uPass"); uRect = loc("uRect"); uMode = loc("uMode");
-        uWxMix = loc("uWxMix"); uWxChan = loc("uWxChan"); uWxPal = loc("uWxPal"); uWxClouds = loc("uWxClouds");
+        uWxMix = loc("uWxMix"); uWxChan = loc("uWxChan"); uWxPal = loc("uWxPal"); uWxClouds = loc("uWxClouds"); uWxAmt = loc("uWxAmt");
         uAuroraAmt = loc("uAuroraAmt");
         String[] samplers = {"uDay", "uLights", "uWater", "uClouds", "uCloudsPrev", "uFlow", "uFlowPrev", "uWxA", "uWxB", "uPal", "uAurora"};
         for (int i = 0; i < samplers.length; i++) GLES20.glUniform1i(loc(samplers[i]), i);
@@ -462,6 +462,7 @@ final class GlobeRenderer {
         GLES30.glUniform1i(uWxChan, f.wxChan);
         GLES30.glUniform1i(uWxPal, f.wxPal);
         GLES20.glUniform1f(uWxClouds, f.wxClouds);
+        GLES20.glUniform1f(uWxAmt, f.wxAmt);
         GLES20.glUniform1f(uAuroraAmt, f.auroraAmt);
         GLES20.glUniform1f(uFade, f.fade);
         GLES20.glUniform1f(uTime, f.time);
