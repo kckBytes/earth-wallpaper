@@ -46,6 +46,8 @@ final class GlobeRenderer {
     private int uWxMix, uWxChan, uWxPal, uWxClouds, uWxAmt, uWxStyle;
     private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, sColor, sRound, sPoint, streakVbo, streakIbo, streakIdx, dotVbo;
     private int sSun, sHalo, sInk, sOffset;
+    // ribbons: one instanced quad per trail segment
+    private int ribProg, rView, rCenter, rRadius, rCamDist, rRes, rSun, rK, rWN, rWD, rOut, rAlpha, rDark, rOutA, cornerVbo;
     private float maxLine = 1f;                       // widest line this GPU draws (for the streaks' dark outline)
     static final int MAX_DOTS = 4096;
     private int auroraTex, uAuroraAmt, bordersTex, uBorderAmt;
@@ -60,6 +62,7 @@ final class GlobeRenderer {
         float labelAmt, labelCx, labelCy;          // city-name label (GL px, centre)
         float wxMix, wxClouds, wxAmt; int wxChan, wxPal, wxStyle;  // weather view: blend between the two sheets, channel, palette row
         java.nio.FloatBuffer streaks; float streakAlpha;   // wind streak points (null = none)
+        float sDayW = 3.5f, sNightW = 1.6f, sOutW = 1f, sOutA = 0.5f, sDark = 1f;   // streak look (tuning panel)
         java.nio.FloatBuffer fireDots, boltDots; int fireN, boltN;   // fires / lightning: xyz + opacity per dot
         float auroraAmt, borderAmt;
         int stormN;                                // storm labels: anchor (storm centre, GL px) and opacity
@@ -171,6 +174,34 @@ final class GlobeRenderer {
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, streakVbo);
             GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, n * k * 16, null, GLES20.GL_STREAM_DRAW);
         } catch (Exception e) { Log.e(TAG, "streak shader failed", e); streakProg = 0; }
+        try {
+            int vs = compile(GLES20.GL_VERTEX_SHADER, readAsset(am, "ribbon.vert"));
+            int fs = compile(GLES20.GL_FRAGMENT_SHADER, readAsset(am, "ribbon.frag"));
+            ribProg = GLES20.glCreateProgram();
+            GLES20.glAttachShader(ribProg, vs); GLES20.glAttachShader(ribProg, fs);
+            GLES20.glBindAttribLocation(ribProg, 0, "aCorner");
+            GLES20.glBindAttribLocation(ribProg, 1, "aA");
+            GLES20.glBindAttribLocation(ribProg, 2, "aB");
+            GLES20.glLinkProgram(ribProg);
+            int[] ok3 = new int[1];
+            GLES20.glGetProgramiv(ribProg, GLES20.GL_LINK_STATUS, ok3, 0);
+            if (ok3[0] == 0) throw new IllegalStateException(GLES20.glGetProgramInfoLog(ribProg));
+            rView = GLES20.glGetUniformLocation(ribProg, "uView"); rCenter = GLES20.glGetUniformLocation(ribProg, "uCenter");
+            rRadius = GLES20.glGetUniformLocation(ribProg, "uRadius"); rCamDist = GLES20.glGetUniformLocation(ribProg, "uCamDist");
+            rRes = GLES20.glGetUniformLocation(ribProg, "uRes"); rSun = GLES20.glGetUniformLocation(ribProg, "uSun");
+            rK = GLES20.glGetUniformLocation(ribProg, "uK"); rWN = GLES20.glGetUniformLocation(ribProg, "uWNight");
+            rWD = GLES20.glGetUniformLocation(ribProg, "uWDay"); rOut = GLES20.glGetUniformLocation(ribProg, "uOutline");
+            rAlpha = GLES20.glGetUniformLocation(ribProg, "uAlpha"); rDark = GLES20.glGetUniformLocation(ribProg, "uDark");
+            rOutA = GLES20.glGetUniformLocation(ribProg, "uOutA");
+            float[] corners = {0f, -1f, 0f, 1f, 1f, -1f, 1f, 1f};       // the quad template (triangle strip)
+            java.nio.FloatBuffer cb = ByteBuffer.allocateDirect(corners.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+            cb.put(corners).position(0);
+            int[] cv = new int[1]; GLES20.glGenBuffers(1, cv, 0); cornerVbo = cv[0];
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, cornerVbo);
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, corners.length * 4, cb, GLES20.GL_STATIC_DRAW);
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0);
+            Log.i(TAG, "streaks: ribbons ready (" + (WindStreaks.N * WindStreaks.K - 1) + " segments, 2 triangles each)");
+        } catch (Exception e) { Log.e(TAG, "ribbon shader failed, using lines", e); ribProg = 0; }
         try {
             int vs = compile(GLES20.GL_VERTEX_SHADER, readAsset(am, "globe.vert"));
             int fs = compile(GLES20.GL_FRAGMENT_SHADER, readAsset(am, "label.frag"));
@@ -310,8 +341,50 @@ final class GlobeRenderer {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
     }
 
+    /** Ribbons: one instanced quad per trail segment; width, ink and outline computed on the GPU in one pass. */
+    private boolean drawRibbons(Frame f) {
+        if (ribProg == 0 || streakVbo == 0) return false;
+        GLES20.glUseProgram(ribProg);
+        GLES20.glUniformMatrix3fv(rView, 1, false, f.view, 0);
+        GLES20.glUniform2f(rCenter, f.cx, f.cy);
+        GLES20.glUniform1f(rRadius, f.radius);
+        GLES20.glUniform1f(rCamDist, f.camDist);
+        GLES20.glUniform2f(rRes, f.w, f.h);
+        GLES20.glUniform3f(rSun, f.sun[0], f.sun[1], f.sun[2]);
+        GLES30.glUniform1i(rK, WindStreaks.K);
+        float scale = Math.max(0.75f, Math.min(1.25f, f.radius / 650f));   // a touch thinner when the globe is small
+        GLES20.glUniform1f(rWN, f.sNightW * scale);
+        GLES20.glUniform1f(rWD, f.sDayW * scale);
+        GLES20.glUniform1f(rOut, f.sOutW);
+        GLES20.glUniform1f(rAlpha, f.streakAlpha);
+        GLES20.glUniform1f(rDark, f.sDark);
+        GLES20.glUniform1f(rOutA, f.sOutA);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, streakVbo);
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, WindStreaks.N * WindStreaks.K * 16, f.streaks);
+        GLES20.glEnableVertexAttribArray(1);
+        GLES20.glVertexAttribPointer(1, 4, GLES20.GL_FLOAT, false, 16, 0);     // A = point i
+        GLES30.glVertexAttribDivisor(1, 1);
+        GLES20.glEnableVertexAttribArray(2);
+        GLES20.glVertexAttribPointer(2, 4, GLES20.GL_FLOAT, false, 16, 16);    // B = point i + 1
+        GLES30.glVertexAttribDivisor(2, 1);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, cornerVbo);
+        GLES20.glEnableVertexAttribArray(0);
+        GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, 0);
+        GLES30.glVertexAttribDivisor(0, 0);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES30.glDrawArraysInstanced(GLES20.GL_TRIANGLE_STRIP, 0, 4, WindStreaks.N * WindStreaks.K - 1);
+        GLES20.glDisable(GLES20.GL_BLEND);
+        GLES30.glVertexAttribDivisor(1, 0); GLES30.glVertexAttribDivisor(2, 0);   // leave state as the other passes expect
+        GLES20.glDisableVertexAttribArray(1); GLES20.glDisableVertexAttribArray(2);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);           // the quad, for the label passes
+        return true;
+    }
+
     private void drawStreaks(Frame f) {
-        if (streakProg == 0 || f.streaks == null || f.streakAlpha <= 0.003f) return;
+        if (f.streaks == null || f.streakAlpha <= 0.003f) return;
+        if (drawRibbons(f)) return;
+        if (streakProg == 0) return;
         GLES20.glUseProgram(streakProg);
         GLES20.glUniformMatrix3fv(sView, 1, false, f.view, 0);
         GLES20.glUniform2f(sCenter, f.cx, f.cy);
