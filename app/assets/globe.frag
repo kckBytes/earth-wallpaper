@@ -138,6 +138,25 @@ float cloudCover(vec2 uv, vec2 shiftCur, vec2 shiftPrev) {
     return c * (0.55 + 0.45 * c);
 }
 
+/** The weather layer's colour at uv (alpha = how much it covers the ground). */
+vec4 wxColour(vec2 uv, float water) {
+    vec3 s = mix(textureLod(uWxA, uv, 0.0).rgb, textureLod(uWxB, uv, 0.0).rgb, uWxMix);
+    vec4 pc;
+    if (uWxChan == 3) {
+        vec2 w = s.rg * 100.0 - 50.0;
+        pc = textureLod(uPal, vec2(clamp(length(w) / 40.0, 0.0, 1.0), (float(uWxPal) + 0.5) / 16.0), 0.0);
+    } else if (uWxChan == 4) {
+        vec4 rain = textureLod(uPal, vec2(s.r, 1.5 / 16.0), 0.0), snow = textureLod(uPal, vec2(s.r, 2.5 / 16.0), 0.0);
+        pc = mix(rain, snow, smoothstep(0.35, 0.65, s.g));
+    } else {
+        float v = uWxChan == 0 ? s.r : uWxChan == 1 ? s.g : s.b;
+        pc = textureLod(uPal, vec2(v, (float(uWxPal) + 0.5) / 16.0), 0.0);
+        if (uWxPal == 9) pc.a *= water;                  // waves: sea only
+        if (uWxPal == 8) pc.a *= 1.0 - water;            // snow depth: land only (the model has no snow at sea)
+    }
+    return pc;
+}
+
 vec3 aces(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
@@ -243,6 +262,19 @@ void main() {
         float glint = exp(-tan2 / 0.06) * (0.05 + 2.0 * fres) * 0.55;
         ground += vec3(0.95, 0.93, 0.88) * glint * water * smoothstep(0.0, 0.25, mu) * shadow * (1.0 - cl);
 
+        // weather on the real Earth lies on the ground, UNDER the real clouds (as it does in reality): the clouds
+        // above look exactly as they do with no layer on, and thin cloud lets the colour show through like land
+        bool wReal = uWxAmt > 0.0 && !(uWxStyle == 1 || uMode == 1 || uMode == 2 || uMode == 3);
+        vec4 wpc = vec4(0.0);
+        float wA = 0.0, dayW = 0.0;
+        if (wReal) {
+            wpc = wxColour(uv, water);
+            wA = clamp(wpc.a * uWxAmt * 1.2, 0.0, 1.0);
+            dayW = smoothstep(-0.10, 0.25, mu);
+            vec3 wcD = toLinear(wpc.rgb) * (0.65 + 0.45 * sqrt(diff)) * shadow;
+            ground = mix(ground, wcD, wA * dayW);
+        }
+
         // thicker cloud is brighter; thin cloud lets the surface through
         vec3 cloud = vec3(0.80 + 0.18 * cl) * diff;
         vec3 surf = mix(ground, cloud, cl) * sunCol;
@@ -258,6 +290,8 @@ void main() {
         surf += aurora * night;
         // night-side cloud tops stay faintly visible (as in infrared night imagery) so weather reads 24 h a day
         surf += (albedo * 0.0035 + vec3(cl * cl) * 0.020) * vec3(0.60, 0.72, 1.0) * night;
+        // weather at night: a soft readable glow, dimmed under cloud like city lights are
+        if (wReal) surf = mix(surf, toLinear(wpc.rgb) * 0.16, wA * (1.0 - dayW) * (1.0 - 0.85 * cl));
 
         // atmosphere seen against the surface: blue in-scatter, stronger toward the limb
         float path = pow(1.0 - muV, 2.2);
@@ -294,24 +328,11 @@ void main() {
         // country borders + coastlines (Natural Earth line mask): line core + a wider, blurrier sample for the halo
         float bl = uBorderAmt > 0.0 ? tex(uBorders, uv).r : 0.0;
         float bh = uBorderAmt > 0.0 ? textureGrad(uBorders, uv, gDx * 3.5, gDy * 3.5).r : 0.0;
-        if (uWxAmt > 0.0) {
+        if (uWxAmt > 0.0 && !wReal) {
             // weather layer over whichever base is chosen: at full strength it is the Ventusky-style map,
             // below that the real Earth shows through
             // Ventusky-style weather layer: the field's colours over a muted globe, coastlines, real clouds faint on top
-            vec3 s = mix(textureLod(uWxA, uv, 0.0).rgb, textureLod(uWxB, uv, 0.0).rgb, uWxMix);
-            vec4 pc;
-            if (uWxChan == 3) {
-                vec2 w = s.rg * (255.0 / 255.0) * 100.0 - 50.0;
-                pc = textureLod(uPal, vec2(clamp(length(w) / 40.0, 0.0, 1.0), (float(uWxPal) + 0.5) / 16.0), 0.0);
-            } else if (uWxChan == 4) {
-                vec4 rain = textureLod(uPal, vec2(s.r, 1.5 / 16.0), 0.0), snow = textureLod(uPal, vec2(s.r, 2.5 / 16.0), 0.0);
-                pc = mix(rain, snow, smoothstep(0.35, 0.65, s.g));
-            } else {
-                float v = uWxChan == 0 ? s.r : uWxChan == 1 ? s.g : s.b;
-                pc = textureLod(uPal, vec2(v, (float(uWxPal) + 0.5) / 16.0), 0.0);
-                if (uWxPal == 9) pc.a *= water;                  // waves: sea only
-                if (uWxPal == 8) pc.a *= 1.0 - water;            // snow depth: land only (the model has no snow at sea)
-            }
+            vec4 pc = wReal ? wpc : wxColour(uv, water);
             float grey = dot(albedo, vec3(0.3, 0.5, 0.2));
             vec3 base = mix(vec3(grey) * 0.20 + vec3(0.006), albedo * 0.08 + vec3(0.004, 0.010, 0.025), water);
             float light = mix(0.50, 1.0, smoothstep(-0.18, 0.22, mu));   // soft day / night: it still reads as a globe
@@ -325,16 +346,8 @@ void main() {
             if (uWxStyle == 1 || uMode == 1 || uMode == 2 || uMode == 3) {
                 // weather map: fade from the base view to the full Ventusky-style map (100 % = the map alone)
                 surf = mix(surf, wxs, uWxAmt);
-            } else {
-                // on the real Earth: the colour follows day and night but never disappears. Daytime: full colour,
-                // gently shaded by the Sun, showing through thin cloud (thick cloud stays on top). Night: a soft
-                // readable glow. Twilight blends the two.
-                float dayness = smoothstep(-0.10, 0.25, mu);
-                float lightW = mix(0.16, 0.65 + 0.45 * sqrt(max(diff, 0.0)), dayness);
-                vec3 wc = toLinear(pc.rgb) * lightW * mix(vec3(1.0), sunCol, dayness);
-                float a = clamp(pc.a * uWxAmt * 1.2, 0.0, 1.0) * (1.0 - 0.7 * cl * cl);
-                surf = mix(surf, wc, a);
             }
+            // on the real Earth the colour was already laid on the ground under the clouds (above)
         }
         // borders drawn last, the same on every view and layer: a dark halo then a bright core, so they read
         // on dark land (like the waves view), on bright weather colours and on the real Earth alike
