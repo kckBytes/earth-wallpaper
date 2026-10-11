@@ -169,6 +169,7 @@ public class SettingsActivity extends Activity {
         toggle("Wind streaks — on any Earth, with or without a weather layer", Prefs.STREAKS, true);
 
         sub("4 · Labels");
+        toggle("Country borders & coastlines", Prefs.BORDERS, true);
         bit("Hurricanes & tropical storms", Prefs.L_STORMS);
         bit("Highs & lows (H / L)", Prefs.L_SYSTEMS);
         bit("Earthquakes", Prefs.L_QUAKES);

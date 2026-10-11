@@ -35,6 +35,7 @@ final class Prefs {
     // Earth Next: layers stacked on the base
     static final String WX = "wx_layer";                // weather overlay: -1 none, 10..19 = temperature .. waves
     static final String WX_AMT = "wx_amount";           // overlay strength 0..1 (1 = full Ventusky-style map)
+    static final String BORDERS = "borders";            // country borders + coastlines as thin light lines
     static final String MASK = "layer_mask";            // which labels / dots are shown (bits below)
     static final int L_STORMS = 1, L_SYSTEMS = 2, L_QUAKES = 4, L_VOLCANOES = 8, L_FIRES = 16, L_FLOODS = 32,
             L_LAUNCHES = 64, L_STATIONS = 128, L_CAMERAS = 256, D_LIGHTNING = 512, D_FIRES = 1024, D_AURORA = 2048;
@@ -106,7 +107,7 @@ final class Prefs {
         float size = 1f, height = DEF_HEIGHT, gain = DEF_GAIN;
         boolean horizon, motion, parallax = true, marker = true, stars = true, storms = true, streaks = true;
         int view = 0, replayH = 12;
-        int wx = DEF_WX, mask = MASK_ALL; float wxAmt = DEF_WX_AMT;
+        int wx = DEF_WX, mask = MASK_ALL; float wxAmt = DEF_WX_AMT; boolean borders = true;
     }
 
     static Config read(SharedPreferences p) {
@@ -133,6 +134,7 @@ final class Prefs {
         c.wx = p.getInt(WX, DEF_WX);
         c.wxAmt = p.getFloat(WX_AMT, DEF_WX_AMT);
         c.mask = p.getInt(MASK, MASK_ALL);
+        c.borders = p.getBoolean(BORDERS, true);
         c.storms = (c.mask & 511) != 0;
         c.replayH = p.getInt(REPLAY_H, 12);
         return c;
