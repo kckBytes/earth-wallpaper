@@ -40,6 +40,7 @@ uniform float uWxMix;          // 0..1 between the two times
 uniform int   uWxChan;         // 0..2 channel; 3 = wind speed from east/north; 4 = precipitation (rate + frozen share)
 uniform int   uWxPal;          // palette row
 uniform float uWxClouds;       // how much of the real (satellite) cloud cover to lay on top
+uniform int   uWxStyle;        // 0 = on the real Earth (keeps clouds, sunlight, night), 1 = weather map
 uniform float uWxAmt;          // Earth Next: weather overlay strength over the base view (0 = off, 1 = full map)
 uniform sampler2D uAurora;     // NOAA aurora forecast: chance of aurora overhead (0..1), 360 x 181
 uniform float uAuroraAmt;      // 0 = off
@@ -321,11 +322,17 @@ void main() {
             wxs = mix(wxs, wxs * 0.35, coast * 0.8 * (1.0 - uBorderAmt));   // dark coastlines when borders are off
             wxs = mix(wxs, vec3(0.80) * light, cl * uWxClouds);
             wxs += vec3(0.24, 0.48, 1.0) * pow(1.0 - muV, 2.2) * 0.16;
-            // below ~65 %: tint the real Earth with the layer's colours only (no muted base, nights stay real);
-            // towards 100 %: hand over to the full map
-            float a = clamp(pc.a * uWxAmt * 1.25, 0.0, 1.0);
-            vec3 tinted = mix(surf, c * light, a);
-            surf = mix(tinted, wxs, smoothstep(0.65, 1.0, uWxAmt));
+            if (uWxStyle == 1 || uMode == 1 || uMode == 2 || uMode == 3) {
+                // weather map: fade from the base view to the full Ventusky-style map (100 % = the map alone)
+                surf = mix(surf, wxs, uWxAmt);
+            } else {
+                // on the real Earth: the layer's colour replaces the ground under the real clouds, lit by the real
+                // Sun (dark at night, a faint glow so it still reads); clouds, city lights and atmosphere stay
+                float a = clamp(pc.a * uWxAmt * 1.15, 0.0, 1.0) * (1.0 - cl);
+                vec3 wc = toLinear(pc.rgb);
+                vec3 litW = wc * (diff * shadow * 1.05 * sunCol + 0.035 * night);
+                surf += (litW - ground * sunCol) * a;
+            }
         }
         // borders drawn last, the same on every view and layer: a dark halo then a bright core, so they read
         // on dark land (like the waves view), on bright weather colours and on the real Earth alike
