@@ -40,6 +40,7 @@ uniform float uWxMix;          // 0..1 between the two times
 uniform int   uWxChan;         // 0..2 channel; 3 = wind speed from east/north; 4 = precipitation (rate + frozen share)
 uniform int   uWxPal;          // palette row
 uniform float uWxClouds;       // how much of the real (satellite) cloud cover to lay on top
+uniform float uWxAmt;          // Earth Next: weather overlay strength over the base view (0 = off, 1 = full map)
 uniform sampler2D uAurora;     // NOAA aurora forecast: chance of aurora overhead (0..1), 360 x 181
 uniform float uAuroraAmt;      // 0 = off
 const float FLOW_MAX = 2.5;    // deg/hour at byte 255
@@ -214,7 +215,7 @@ void main() {
         float water = tex(uWater, uv).r;
         vec2 shC = flowShift(uFlow, uv, uAdvect);
         vec2 shP = uCloudMix < 0.999 ? flowShift(uFlowPrev, uv, uAdvectPrev) : vec2(0.0);
-        float cl = uMode == 0 || uMode == 3 || uMode >= 10 ? cloudCover(uv, shC, shP) : 0.0;
+        float cl = uMode == 0 || uMode == 3 || uWxAmt > 0.0 ? cloudCover(uv, shC, shP) : 0.0;
 
         // cloud shadow: sample the cloud layer offset toward the Sun
         vec3 east = normalize(vec3(-N.y, N.x, 0.0) + vec3(1e-6, 0.0, 0.0));
@@ -280,7 +281,16 @@ void main() {
                 surf = mix(vec3(grey) * 0.30 + vec3(0.01), sstColour(T) * 0.85, sea);
             }
             surf += vec3(0.24, 0.48, 1.0) * rim * 0.20;
-        } else if (uMode >= 10) {
+        } else if (uMode == 3) {
+            // night lights: the whole planet as seen at night, weather glowing faintly in infrared
+            float Ln = tex(uLights, uv).r;
+            surf = (vec3(1.0, 0.66, 0.30) * Ln * 2.2 + vec3(1.0, 0.9, 0.7) * Ln * Ln * 2.5) * (1.0 - 0.75 * cl)
+                 + (albedo * 0.006 + vec3(cl * cl) * 0.06) * vec3(0.60, 0.72, 1.0)
+                 + vec3(0.10, 0.20, 0.45) * pow(1.0 - muV, 2.5) * 0.12 + aurora * 1.6;
+        }
+        if (uWxAmt > 0.0) {
+            // weather layer over whichever base is chosen: at full strength it is the Ventusky-style map,
+            // below that the real Earth shows through
             // Ventusky-style weather layer: the field's colours over a muted globe, coastlines, real clouds faint on top
             vec3 s = mix(textureLod(uWxA, uv, 0.0).rgb, textureLod(uWxB, uv, 0.0).rgb, uWxMix);
             vec4 pc;
@@ -299,18 +309,17 @@ void main() {
             vec3 base = mix(vec3(grey) * 0.20 + vec3(0.006), albedo * 0.08 + vec3(0.004, 0.010, 0.025), water);
             float light = mix(0.50, 1.0, smoothstep(-0.18, 0.22, mu));   // soft day / night: it still reads as a globe
             vec3 c = toLinear(pc.rgb) * 0.80;
-            surf = mix(base, c, pc.a) * light;
+            vec3 wxs = mix(base, c, pc.a) * light;
             float w1 = tex(uWater, uv + gDx).r, w2 = tex(uWater, uv + gDy).r;
             float coast = clamp((abs(w1 - water) + abs(w2 - water)) * 2.5, 0.0, 1.0);
-            surf = mix(surf, surf * 0.35, coast * 0.8);          // thin dark coastlines
-            surf = mix(surf, vec3(0.80) * light, cl * uWxClouds);
-            surf += vec3(0.24, 0.48, 1.0) * pow(1.0 - muV, 2.2) * 0.16;
-        } else if (uMode == 3) {
-            // night lights: the whole planet as seen at night, weather glowing faintly in infrared
-            float Ln = tex(uLights, uv).r;
-            surf = (vec3(1.0, 0.66, 0.30) * Ln * 2.2 + vec3(1.0, 0.9, 0.7) * Ln * Ln * 2.5) * (1.0 - 0.75 * cl)
-                 + (albedo * 0.006 + vec3(cl * cl) * 0.06) * vec3(0.60, 0.72, 1.0)
-                 + vec3(0.10, 0.20, 0.45) * pow(1.0 - muV, 2.5) * 0.12 + aurora * 1.6;
+            wxs = mix(wxs, wxs * 0.35, coast * 0.8);          // thin dark coastlines
+            wxs = mix(wxs, vec3(0.80) * light, cl * uWxClouds);
+            wxs += vec3(0.24, 0.48, 1.0) * pow(1.0 - muV, 2.2) * 0.16;
+            // below ~65 %: tint the real Earth with the layer's colours only (no muted base, nights stay real);
+            // towards 100 %: hand over to the full map
+            float a = clamp(pc.a * uWxAmt * 1.25, 0.0, 1.0);
+            vec3 tinted = mix(surf, c * light, a);
+            surf = mix(tinted, wxs, smoothstep(0.65, 1.0, uWxAmt));
         }
         col = mix(col, surf, cov);
     }

@@ -1,4 +1,4 @@
-# Builds Earth.apk with the raw SDK tools (no Gradle): aapt2 -> javac -> d8 -> zipalign -> apksigner.
+# Builds EarthNext.apk with the raw SDK tools (no Gradle): aapt2 -> javac -> d8 -> zipalign -> apksigner.
 $ErrorActionPreference = 'Continue'
 $root = $PSScriptRoot
 $dev  = "$env:USERPROFILE\android-dev"
@@ -19,7 +19,7 @@ New-Item -ItemType Directory "$out\gen", "$out\classes", "$out\dex" -Force | Out
 "[1/6] resources"
 run "$bt\aapt2.exe" @('compile', '--dir', "$root\app\res", '-o', "$out\res.zip")
 run "$bt\aapt2.exe" @('link', '-o', "$out\base.apk", '-I', $jar,
-    '--manifest', "$root\app\AndroidManifest.xml", '-A', "$root\app\assets", '--java', "$out\gen",
+    '--manifest', "$root\app\AndroidManifest.xml", '--custom-package', 'com.chai.earthwall', '-A', "$root\app\assets", '--java', "$out\gen",
     '--min-sdk-version', '30', '--target-sdk-version', '36', '--version-code', '2', '--version-name', '1.1',
     '-0', 'jpg', "$out\res.zip")
 
@@ -43,8 +43,8 @@ if (-not (Test-Path $ks)) {
         '-keysize', '2048', '-validity', '10000', '-storepass', 'earthwall', '-keypass', 'earthwall',
         '-dname', 'CN=Earth Wallpaper')
 }
-run "$bt\apksigner.bat" @('sign', '--ks', $ks, '--ks-pass', 'pass:earthwall', '--out', "$root\Earth.apk", "$out\aligned.apk")
+run "$bt\apksigner.bat" @('sign', '--ks', $ks, '--ks-pass', 'pass:earthwall', '--out', "$root\EarthNext.apk", "$out\aligned.apk")
 
 "[6/6] verify"
-run "$bt\apksigner.bat" @('verify', "$root\Earth.apk")
-"BUILT Earth.apk  $([math]::Round((Get-Item "$root\Earth.apk").Length / 1MB, 1)) MB"
+run "$bt\apksigner.bat" @('verify', "$root\EarthNext.apk")
+"BUILT EarthNext.apk  $([math]::Round((Get-Item "$root\EarthNext.apk").Length / 1MB, 1)) MB"

@@ -375,8 +375,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private int shaderMode() {
         if (dataKind.equals("bt")) return 1;
         if (dataKind.equals("sst")) return 2;
-        if (cfg.view >= 10) return wxTimes.size() >= 1 && wxView == cfg.view ? cfg.view : 0;
-        return cfg.view == 3 ? 3 : 0;
+        return cfg.view == 3 ? 3 : 0;                    // weather is an overlay now (fr.wxAmt), not a view
     }
 
     // ---- weather views: model sheets around the moment on screen, blended; wind streaks on top
@@ -390,13 +389,14 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private boolean wxLoading;
 
     private void maybeLoadWx(long frameNs) {
-        if (cfg.view < 10) { if (wxView != -1) { wxView = -1; wxTimes = new ArrayList<>(); wxField.clear(); wxWind.clear(); } return; }
-        if (wxView == cfg.view && frameNs - wxCheckNs < 20_000_000_000L) return;
+        final int want = Prefs.wxId(cfg.wx, cfg.streaks);
+        if (want < 10) { if (wxView != -1) { wxView = -1; wxTimes = new ArrayList<>(); wxField.clear(); wxWind.clear(); } return; }
+        if (wxView == want && frameNs - wxCheckNs < 20_000_000_000L) return;
         wxCheckNs = frameNs;
         long stamp = Prefs.get(ctx).getLong("wx_stamp", 0);
-        if (wxLoading || (wxView == cfg.view && stamp == wxStamp)) return;
+        if (wxLoading || (wxView == want && stamp == wxStamp)) return;
         wxLoading = true;
-        final int view = cfg.view; final long st = stamp;
+        final int view = want; final long st = stamp;
         decoder.execute(() -> {
             List<Long> ts = WxStore.times(ctx, view);
             java.util.Map<Long, byte[]> f = new java.util.HashMap<>(), w = new java.util.HashMap<>();
@@ -412,7 +412,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             int W = wh[0], Hh = wh[1];
             h.post(() -> {
                 wxLoading = false;
-                if (cfg.view != view) return;
+                if (Prefs.wxId(cfg.wx, cfg.streaks) != view) return;
                 wxTimes = ok; wxField.clear(); wxField.putAll(f); wxWind.clear(); wxWind.putAll(w);
                 wxView = view; wxStamp = st; wxUpA = wxUpB = -1; windTA = windTB = -1;
                 if (W > 0) { wxW = W; wxH = Hh; }
@@ -430,7 +430,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     /** Pick the two sheets around time T, upload them if they changed, set the blend; then the streaks. */
     private void applyWx(long T, double dtS) {
         fr.streaks = null;
-        if (fr.mode < 10 || wxTimes.isEmpty()) return;
+        fr.wxAmt = 0f;
+        if (wxView < 10 || wxTimes.isEmpty()) return;
         int n = wxTimes.size(), i = 0;
         while (i < n - 2 && T >= wxTimes.get(i + 1)) i++;
         long ta = wxTimes.get(i), tb = wxTimes.get(Math.min(i + 1, n - 1));
@@ -441,16 +442,18 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             wxUpA = ta; wxUpB = tb;
         }
         fr.wxMix = (float) mix;
-        fr.wxChan = WxStore.channel(cfg.view);
-        fr.wxPal = wxPalette(cfg.view);
-        fr.wxClouds = cfg.view == 12 ? 0.22f : cfg.view == 16 ? 0.28f : 0.38f;
+        boolean overlay = cfg.wx >= 10 && wxView == cfg.wx;
+        fr.wxAmt = overlay ? Math.max(0f, Math.min(1f, cfg.wxAmt)) : 0f;
+        fr.wxChan = WxStore.channel(wxView);
+        fr.wxPal = wxPalette(wxView);
+        fr.wxClouds = wxView == 12 ? 0.22f : wxView == 16 ? 0.28f : 0.38f;
         if (!cfg.streaks) return;
         if (ta != windTA) { windA = decodeWind(wxWind.get(ta)); windTA = ta; }
         if (tb != windTB) { windB = decodeWind(wxWind.get(tb)); windTB = tb; }
         windMix = mix;
         streaks.step(dtS, this::windAt, camLat, camLon);
         fr.streaks = streaks.verts;
-        fr.streakAlpha = 0.55f * fr.fade;
+        fr.streakAlpha = (0.38f + 0.17f * fr.wxAmt) * fr.fade;   // a little softer over the real Earth
     }
 
     private float[] decodeWind(byte[] rgb) {
@@ -989,12 +992,11 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     /** Fires seen in the 24 h before T glow orange; lightning of the last 20 min before T flickers. */
     private void projectDots(long T) {
         fr.fireN = fr.boltN = 0;
-        fr.auroraAmt = haveAurora ? 1f : 0f;
-        if (!cfg.storms) return;
+        fr.auroraAmt = haveAurora && (cfg.mask & Prefs.D_AURORA) != 0 ? 1f : 0f;
         final long DAY = 86_400_000L, BIN = 600_000L;
         fireBuf.position(0);
         int n = 0;
-        for (int i = 0; i < fT.length && n < GlobeRenderer.MAX_DOTS; i++) {
+        for (int i = 0; i < fT.length && n < GlobeRenderer.MAX_DOTS && (cfg.mask & Prefs.D_FIRES) != 0; i++) {
             long age = T - fT[i];
             if (age < 0 || age > DAY) continue;
             float a = (float) Math.min(1, 0.22 + Math.log10(1 + fPow[i]) / 4.5) * (float) Math.min(1, age / 1_800_000.0 + 0.2)
@@ -1004,7 +1006,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         fireBuf.position(0); fr.fireDots = fireBuf; fr.fireN = n;
         boltBuf.position(0);
         n = 0;
-        for (int i = 0; i < bT.length && n < GlobeRenderer.MAX_DOTS; i++) {
+        for (int i = 0; i < bT.length && n < GlobeRenderer.MAX_DOTS && (cfg.mask & Prefs.D_LIGHTNING) != 0; i++) {
             long age = T - bT[i];
             if (age < 0 || age > 2 * BIN) continue;
             double p = Math.min(0.5, 0.04 + bN[i] / 60.0);              // busier cells flash more often
@@ -1222,6 +1224,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             Storm s = storms.get(i);
             fr.stormAmt[i] = 0f;
             fr.stormN = i + 1;
+            if (!Prefs.labelOn(cfg.mask, s.type)) continue;           // category switched off: frees its spot
             if (!stormAt(s, T, stormLL)) continue;
             double la = Math.toRadians(stormLL[0]), lo = Math.toRadians(stormLL[1]);
             double ex = Math.cos(la) * Math.cos(lo), ey = Math.cos(la) * Math.sin(lo), ez = Math.sin(la);

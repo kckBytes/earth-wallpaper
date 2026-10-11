@@ -112,7 +112,6 @@ public class SettingsActivity extends Activity {
 
         header("View");
         toggle("Mark my city", Prefs.MARKER, true);
-        toggle("Globe labels: storms, highs / lows, eruptions, quakes, fires, floods, launches", Prefs.STORMS, true);
         slider("Globe size", Prefs.SIZE, 1f, 70, 130, 0.01f, "%");
         slider("Height on screen", Prefs.HEIGHT, Prefs.DEF_HEIGHT, 10, 60, 0.01f, "%");
 
@@ -138,25 +137,57 @@ public class SettingsActivity extends Activity {
         slider("Tilt sensitivity", Prefs.PARALLAX_GAIN, Prefs.DEF_GAIN, 5, 100, 0.01f, "%");
         toggle("Stars", Prefs.STARS, true);
 
-        header("Globe view");
+        // ---------------- Layers: base Earth + weather overlay + motion + labels + dots, all independent
+        header("Layers");
+        TextView lh = text("Stack them like a map app: pick the Earth underneath, tint it with a weather layer, "
+                + "and choose exactly which labels and glows appear.", 12, false);
+        lh.setAlpha(0.6f);
+        col.addView(lh, lp(dp(2)));
+
+        sub("1 · Base Earth");
         RadioGroup views = new RadioGroup(this);
         String[] vn = {"Natural — true colour, live clouds", "Infrared — cloud-top temperature, day and night",
                 "Sea temperature — today's ocean surface", "Night lights — the whole planet after dark"};
         for (int i = 0; i < vn.length; i++) views.addView(radio(vn[i], 100 + i));
-        TextView wxh = text("Weather (NOAA model, every 3 h, Ventusky-style colours)", 13, true);
-        wxh.setAlpha(0.8f);
-        views.addView(wxh, lp(dp(10)));
+        views.check(100 + Math.max(0, Math.min(3, p.getInt(Prefs.VIEW, 0))));
+        views.setOnCheckedChangeListener((g, id) -> p.edit().putInt(Prefs.VIEW, id - 100).apply());
+        col.addView(views, lp(dp(4)));
+
+        sub("2 · Weather on top (NOAA model, every 3 h)");
+        RadioGroup wx = new RadioGroup(this);
+        wx.addView(radio("None", 299));
         String[] wn = {"Temperature", "Feels like", "Rain & snow", "Wind speed", "Wind gusts", "Air pressure",
                 "Thunderstorms", "Humidity", "Snow cover", "Waves"};
-        for (int i = 0; i < wn.length; i++) views.addView(radio(wn[i], 110 + i));
-        views.check(100 + p.getInt(Prefs.VIEW, 0));
-        views.setOnCheckedChangeListener((g, id) -> p.edit().putInt(Prefs.VIEW, id - 100).apply());
-        col.addView(views, lp(dp(8)));
-        toggle("Wind streaks on the weather views", Prefs.STREAKS, true);
+        for (int i = 0; i < wn.length; i++) wx.addView(radio(wn[i], 310 + i));
+        int w0 = p.getInt(Prefs.WX, Prefs.DEF_WX);
+        wx.check(w0 >= 10 ? 300 + w0 : 299);
+        wx.setOnCheckedChangeListener((g, id) -> p.edit().putInt(Prefs.WX, id == 299 ? -1 : id - 300).apply());
+        col.addView(wx, lp(dp(4)));
+        slider("Weather strength (100% = full weather map)", Prefs.WX_AMT, Prefs.DEF_WX_AMT, 10, 100, 0.01f, "%");
+
+        sub("3 · Motion");
+        toggle("Wind streaks — on any Earth, with or without a weather layer", Prefs.STREAKS, true);
+
+        sub("4 · Labels");
+        bit("Hurricanes & tropical storms", Prefs.L_STORMS);
+        bit("Highs & lows (H / L)", Prefs.L_SYSTEMS);
+        bit("Earthquakes", Prefs.L_QUAKES);
+        bit("Volcanic eruptions", Prefs.L_VOLCANOES);
+        bit("Wildfires (named)", Prefs.L_FIRES);
+        bit("Floods", Prefs.L_FLOODS);
+        bit("Rocket launches", Prefs.L_LAUNCHES);
+        bit("Space stations & Hubble", Prefs.L_STATIONS);
+        bit("Weather satellites that take the cloud pictures", Prefs.L_CAMERAS);
+
+        sub("5 · Dots & glows");
+        bit("Lightning flashes", Prefs.D_LIGHTNING);
+        bit("Fire hotspots (glowing dots)", Prefs.D_FIRES);
+        bit("Aurora on the night side", Prefs.D_AURORA);
+
         TextView vHint = text("Infrared and sea temperature come from the live 5-satellite map. In infrared, white is cold "
                 + "high cloud and colours mark the coldest storm tops.", 12, false);
         vHint.setAlpha(0.6f);
-        col.addView(vHint, lp(dp(2)));
+        col.addView(vHint, lp(dp(8)));
 
         header("Replay (back triple-tap)");
         steps("Replay the last", Prefs.REPLAY_H, Prefs.REPLAY_CHOICES, 12, " h");
@@ -320,6 +351,24 @@ public class SettingsActivity extends Activity {
         r.setText(s);
         r.setId(id);
         return r;
+    }
+
+    private void sub(String s) {
+        TextView t = text(s, 13, true);
+        t.setAlpha(0.7f);
+        col.addView(t, lp(dp(18)));
+    }
+
+    /** One switch per label / dot category, stored together as bits of Prefs.MASK. */
+    private void bit(String label, int bit) {
+        Switch s = new Switch(this);
+        s.setText(label);
+        s.setChecked((p.getInt(Prefs.MASK, Prefs.MASK_ALL) & bit) != 0);
+        s.setOnCheckedChangeListener((v, on) -> {
+            int m = p.getInt(Prefs.MASK, Prefs.MASK_ALL);
+            p.edit().putInt(Prefs.MASK, on ? (m | bit) : (m & ~bit)).apply();
+        });
+        col.addView(s, lp(dp(6)));
     }
 
     private void toggle(String label, String key, boolean def) {

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.chai.earthwall">
+    package="com.chai.earthwall.next">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -18,7 +18,7 @@
         android:theme="@android:style/Theme.DeviceDefault">
 
         <service
-            android:name=".EarthWallpaperService"
+            android:name="com.chai.earthwall.EarthWallpaperService"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_WALLPAPER"
             android:exported="true">
@@ -29,15 +29,15 @@
         </service>
 
         <activity
-            android:name=".ExploreActivity"
-            android:label="Earth control"
+            android:name="com.chai.earthwall.ExploreActivity"
+            android:label="Earth Next control"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:screenOrientation="portrait"
             android:exported="true" />
 
         <service
-            android:name=".EarthTileService"
-            android:label="Earth"
+            android:name="com.chai.earthwall.EarthTileService"
+            android:label="Earth Next"
             android:icon="@drawable/ic_tile"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">
@@ -47,7 +47,7 @@
         </service>
 
         <activity
-            android:name=".SettingsActivity"
+            android:name="com.chai.earthwall.SettingsActivity"
             android:label="@string/app_name"
             android:exported="true">
             <intent-filter>
