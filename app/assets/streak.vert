@@ -6,7 +6,9 @@ uniform vec2  uCenter;                    // globe centre, px
 uniform float uRadius, uCamDist;
 uniform vec2  uRes;
 uniform float uPointSize;
+uniform vec3  uSun;                       // toward the Sun (ECEF): how much daylight each point is in
 out float vA;
+out float vDay;
 void main() {
     vec3 e = aP.xyz;
     float vx = dot(uView[0], e), vy = dot(uView[1], e), vz = dot(uView[2], e);
@@ -14,6 +16,7 @@ void main() {
     vec2 p = uCenter + vec2(vx, vy) / (uCamDist - vz) / tanA * uRadius;
     float facing = vz * uCamDist;
     vA = aP.w * smoothstep(1.0, 1.35, facing);           // fade out toward the limb, gone behind it
+    vDay = smoothstep(-0.10, 0.25, dot(e, uSun));
     gl_PointSize = uPointSize;
     gl_Position = vec4(p / uRes * 2.0 - 1.0, 0.0, 1.0);
 }

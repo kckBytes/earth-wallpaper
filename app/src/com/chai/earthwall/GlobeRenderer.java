@@ -45,6 +45,8 @@ final class GlobeRenderer {
     private final int[] wxTex = new int[3];            // 0, 1 sheets; 2 palette
     private int uWxMix, uWxChan, uWxPal, uWxClouds, uWxAmt, uWxStyle;
     private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, sColor, sRound, sPoint, streakVbo, streakIbo, streakIdx, dotVbo;
+    private int sSun, sHalo, sInk;
+    private float maxLine = 1f;                       // widest line this GPU draws (for the streaks' dark outline)
     static final int MAX_DOTS = 4096;
     private int auroraTex, uAuroraAmt, bordersTex, uBorderAmt;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
@@ -146,6 +148,11 @@ final class GlobeRenderer {
             sRes = GLES20.glGetUniformLocation(streakProg, "uRes"); sAlpha = GLES20.glGetUniformLocation(streakProg, "uAlpha");
             sColor = GLES20.glGetUniformLocation(streakProg, "uColor"); sRound = GLES20.glGetUniformLocation(streakProg, "uRound");
             sPoint = GLES20.glGetUniformLocation(streakProg, "uPointSize");
+            sSun = GLES20.glGetUniformLocation(streakProg, "uSun"); sHalo = GLES20.glGetUniformLocation(streakProg, "uHalo");
+            sInk = GLES20.glGetUniformLocation(streakProg, "uInk");
+            float[] lw = new float[2];
+            GLES20.glGetFloatv(GLES20.GL_ALIASED_LINE_WIDTH_RANGE, lw, 0);
+            maxLine = lw[1];
             int[] bb = new int[2];
             GLES20.glGenBuffers(2, bb, 0);
             streakVbo = bb[0]; streakIbo = bb[1];
@@ -313,6 +320,7 @@ final class GlobeRenderer {
         GLES20.glUniform1f(sAlpha, f.streakAlpha);
         GLES20.glUniform3f(sColor, 1f, 1f, 1f);
         GLES30.glUniform1i(sRound, 0);
+        GLES20.glUniform3f(sSun, f.sun[0], f.sun[1], f.sun[2]);
         GLES20.glUniform1f(sPoint, 1f);
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, streakVbo);
         GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, WindStreaks.N * WindStreaks.K * 16, f.streaks);
@@ -322,7 +330,17 @@ final class GlobeRenderer {
         GLES20.glEnable(GLES30.GL_PRIMITIVE_RESTART_FIXED_INDEX);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
-        GLES20.glLineWidth(Math.max(1f, Math.min(2f, f.radius / 450f)));
+        float core = Math.max(1f, Math.min(2f, f.radius / 450f));
+        boolean halo = maxLine >= core + 2f;
+        if (halo) {                                          // by day: a dark outline first, so white reads on bright Earth
+            GLES30.glUniform1i(sHalo, 1);
+            GLES20.glUniform1f(sInk, 0f);
+            GLES20.glLineWidth(core + 2.5f);
+            GLES20.glDrawElements(GLES20.GL_LINE_STRIP, streakIdx, GLES20.GL_UNSIGNED_SHORT, 0);
+        }
+        GLES30.glUniform1i(sHalo, 0);
+        GLES20.glUniform1f(sInk, halo ? 0f : 0.85f);         // no wide lines on this GPU: darken the streak by day instead
+        GLES20.glLineWidth(core);
         GLES20.glDrawElements(GLES20.GL_LINE_STRIP, streakIdx, GLES20.GL_UNSIGNED_SHORT, 0);
         GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glDisable(GLES30.GL_PRIMITIVE_RESTART_FIXED_INDEX);
@@ -340,6 +358,8 @@ final class GlobeRenderer {
         GLES20.glUniform1f(sCamDist, f.camDist);
         GLES20.glUniform2f(sRes, f.w, f.h);
         GLES30.glUniform1i(sRound, 1);
+        GLES30.glUniform1i(sHalo, 0);
+        GLES20.glUniform1f(sInk, 0f);                        // dots keep their own colours
         GLES20.glUniform1f(sAlpha, f.fade);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);         // dots glow
