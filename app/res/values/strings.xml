@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Earth Next</string>
+    <string name="app_name">Earth</string>
     <string name="wp_author">Live satellite clouds</string>
     <string name="wp_desc">Real-time sunlight and night side, satellite clouds refreshed every 3 hours, city lights after dark.</string>
 </resources>
