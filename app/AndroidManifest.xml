@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.chai.earthwall.next">
+    package="com.chai.earthwall">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -30,14 +30,14 @@
 
         <activity
             android:name="com.chai.earthwall.ExploreActivity"
-            android:label="Earth Next control"
+            android:label="Earth control"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:screenOrientation="portrait"
             android:exported="true" />
 
         <service
             android:name="com.chai.earthwall.EarthTileService"
-            android:label="Earth Next"
+            android:label="Earth"
             android:icon="@drawable/ic_tile"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">
