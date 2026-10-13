@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- normal permission, auto-granted: knock detection samples the accelerometer above 200 Hz -->
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+    <!-- tap-to-update for copies shared as a file (golden app only): the "update ready" note and the installer -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.software.live_wallpaper" android:required="true" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
 
@@ -55,5 +58,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name="com.chai.earthwall.UpdateActivity"
+            android:label="Update Earth"
+            android:excludeFromRecents="true"
+            android:exported="false" />
+        <receiver android:name="com.chai.earthwall.UpdateActivity$Result" android:exported="false" />
     </application>
 </manifest>
