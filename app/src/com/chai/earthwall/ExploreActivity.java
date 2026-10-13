@@ -95,11 +95,21 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
         row.addView(small("\u2212", v -> gl.zoomStep(-1)));                                    // zoom out
         row.addView(btn, new LinearLayout.LayoutParams(dp(150), dp(150)));
         row.addView(small("+", v -> gl.zoomStep(+1)));                                          // zoom in
-        TextView time = small("\u25F7", null);                                                 // hold: time-lapse
+        TextView time = small("\u25F7", null);         // tap: replay the real past hours; hold: fast-forward time
+        final Runnable[] hold = new Runnable[1];
         time.setOnTouchListener((v, e) -> {
             int a2 = e.getActionMasked();
-            if (a2 == MotionEvent.ACTION_DOWN) { v.setPressed(true); gl.setTimeWarp(true); }
-            else if (a2 == MotionEvent.ACTION_UP || a2 == MotionEvent.ACTION_CANCEL) { v.setPressed(false); gl.setTimeWarp(false); }
+            if (a2 == MotionEvent.ACTION_DOWN) {
+                v.setPressed(true);
+                hold[0] = () -> { hold[0] = null; gl.setTimeWarp(true); };
+                v.postDelayed(hold[0], 280);
+            } else if (a2 == MotionEvent.ACTION_UP || a2 == MotionEvent.ACTION_CANCEL) {
+                v.setPressed(false);
+                if (hold[0] != null) {                  // a tap: the stored satellite frames, same as back triple-tap
+                    v.removeCallbacks(hold[0]); hold[0] = null;
+                    if (a2 == MotionEvent.ACTION_UP) gl.playTimelapse();
+                } else gl.setTimeWarp(false);
+            }
             return true;
         });
         row.addView(time);
