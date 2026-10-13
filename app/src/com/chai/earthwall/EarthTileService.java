@@ -11,6 +11,10 @@ import android.service.quicksettings.TileService;
  * camera), so from a locked phone it's power -> swipe down -> tap "Earth", no unlock.
  */
 public class EarthTileService extends TileService {
+    /** Lets the setup checklist tick "Add the Earth tile", however it was added. */
+    @Override public void onTileAdded() { Prefs.get(this).edit().putBoolean(SettingsActivity.SETUP_TILE, true).apply(); }
+    @Override public void onTileRemoved() { Prefs.get(this).edit().putBoolean(SettingsActivity.SETUP_TILE, false).apply(); }
+
     @Override public void onStartListening() {
         Tile t = getQsTile();
         if (t == null) return;

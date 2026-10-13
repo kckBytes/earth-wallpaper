@@ -42,6 +42,9 @@ public class SettingsActivity extends Activity {
     private LinearLayout col;
     private TextView status, city;
     private Button update;
+    private LinearLayout setup;
+    private boolean homeFromNextAdd;
+    static final String SETUP_TILE = "setup_tile", SETUP_CONTROL = "setup_control", SETUP_HIDDEN = "setup_hidden";
     private LinearLayout cityList;
     private final ExecutorService net = Executors.newSingleThreadExecutor();
     private static final int REQ_LOCATION = 7;
@@ -83,9 +86,11 @@ public class SettingsActivity extends Activity {
         update.setVisibility(android.view.View.GONE);
         update.setOnClickListener(v -> startActivity(new android.content.Intent(this, UpdateActivity.class)));
         col.addView(update, lp(dp(14)));
-        if (Updater.enabled(this) && android.os.Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41);
+
+        // first-run guide: a checklist that ticks itself off, then folds away
+        setup = new LinearLayout(this);
+        setup.setOrientation(LinearLayout.VERTICAL);
+        col.addView(setup, lp(dp(14)));
 
         Button set = new Button(this);
         set.setText("Set as wallpaper");
@@ -257,6 +262,7 @@ public class SettingsActivity extends Activity {
         super.onResume();
         city.setText("Lock screen centres on: " + Prefs.home(p).name);
         showUpdate();
+        buildSetup();
         if (Updater.enabled(this)) { Updater.check(this, true); update.postDelayed(this::showUpdate, 4000); }
         buildCityList();
         long t = p.getLong(Prefs.CLOUDS_TIME, 0);
@@ -302,8 +308,126 @@ public class SettingsActivity extends Activity {
         List<Prefs.City> list = Prefs.presets(p);
         list.add(c);
         Prefs.savePresets(p, list);
+        if (homeFromNextAdd) {                                    // from the setup checklist: this is home
+            homeFromNextAdd = false;
+            Prefs.setHome(p, c);
+            Toast.makeText(this, "Home set to " + c.name, Toast.LENGTH_SHORT).show();
+            onResume();
+            return;
+        }
         buildCityList();
         Toast.makeText(this, "Added " + c.name, Toast.LENGTH_SHORT).show();
+    }
+
+    // ------------------------------------------------------------------ setup checklist
+
+    private boolean stepHome() { return p.contains(Prefs.CITY_LAT); }
+
+    private boolean stepWallpaper() {
+        try {
+            WallpaperManager wm = WallpaperManager.getInstance(this);
+            ComponentName me = new ComponentName(this, EarthWallpaperService.class);
+            android.app.WallpaperInfo h = wm.getWallpaperInfo();
+            if (h != null && me.equals(h.getComponent())) return true;
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                android.app.WallpaperInfo l = wm.getWallpaperInfo(WallpaperManager.FLAG_LOCK);
+                if (l != null && me.equals(l.getComponent())) return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    private boolean stepNotify() {
+        return android.os.Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void buildSetup() {
+        setup.removeAllViews();
+        boolean notify = Updater.enabled(this);                   // only the shared app gets update notifications
+        boolean[] done = {stepHome(), stepWallpaper(), p.getBoolean(SETUP_TILE, false), !notify || stepNotify(), p.getBoolean(SETUP_CONTROL, false)};
+        int total = notify ? 5 : 4, n = 0;
+        for (int i = 0; i < done.length; i++) if (done[i] && (notify || i != 3)) n++;
+        if (n >= total || p.getBoolean(SETUP_HIDDEN, false)) { setup.setVisibility(android.view.View.GONE); return; }
+        setup.setVisibility(android.view.View.VISIBLE);
+        android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
+        box.setCornerRadius(dp(18));
+        box.setStroke(dp(1), 0x557FC8FF);
+        box.setColor(0x147FC8FF);
+        setup.setBackground(box);
+        setup.setPadding(dp(16), dp(14), dp(16), dp(10));
+
+        TextView head = text("Set up Earth  ·  " + n + " of " + total + " done", 17, true);
+        setup.addView(head);
+        TextView sub = text("Five quick steps so it works the way it's meant to.", 13, false);
+        sub.setAlpha(0.7f);
+        setup.addView(sub);
+
+        Prefs.City home = Prefs.home(p);
+        setupRow(done[0], "Your home city", done[0] ? "Centred on " + home.name : "The globe turns to face it every time the screen wakes",
+                "Use my location", v -> { homeFromNextAdd = true; myLocation(); });
+        setupRow(done[1], "Set it as your wallpaper", "Lock screen (and home screen if you like)",
+                "Set", v -> openPicker());
+        setupRow(done[2], "Add the Earth tile", "Swipe down on the lock screen, tap Earth: zoom, cities, time-lapse, no unlock",
+                "Add", v -> addTile());
+        if (notify) setupRow(done[3], "Allow update alerts", "So you hear when a new version is out",
+                "Allow", v -> requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41));
+        setupRow(done[4], "Try control mode", "Buttons for zoom, next city, and hold ◷ to fast-forward the clouds",
+                "Try", v -> { p.edit().putBoolean(SETUP_CONTROL, true).apply(); startActivity(new Intent(this, ExploreActivity.class)); });
+
+        TextView skip = text("Hide this", 13, false);
+        skip.setAlpha(0.6f);
+        skip.setPadding(0, dp(8), 0, dp(4));
+        skip.setOnClickListener(v -> { p.edit().putBoolean(SETUP_HIDDEN, true).apply(); buildSetup(); });
+        setup.addView(skip);
+    }
+
+    private void setupRow(boolean ok, String title, String hint, String action, android.view.View.OnClickListener l) {
+        LinearLayout r = new LinearLayout(this);
+        r.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        r.setPadding(0, dp(10), 0, 0);
+        TextView mark = text(ok ? "✓" : "○", 18, true);
+        mark.setTextColor(ok ? 0xFF34A853 : 0xFF7FC8FF);
+        mark.setMinWidth(dp(28));
+        r.addView(mark);
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        TextView t = text(title, 15, true);
+        TextView h = text(hint, 12, false);
+        h.setAlpha(0.7f);
+        words.addView(t);
+        words.addView(h);
+        r.addView(words, new LinearLayout.LayoutParams(0, -2, 1f));
+        if (!ok) {
+            Button b = new Button(this);
+            b.setText(action);
+            b.setAllCaps(false);
+            b.setOnClickListener(l);
+            r.addView(b);
+        } else r.setAlpha(0.55f);
+        setup.addView(r);
+    }
+
+    /** Android 13+: the system's own one-tap "Add tile?" pop-up. Older: how to do it by hand. */
+    private void addTile() {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            try {
+                getSystemService(android.app.StatusBarManager.class).requestAddTileService(
+                        new ComponentName(this, EarthTileService.class), "Earth",
+                        android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_tile), getMainExecutor(), res -> {
+                            if (res == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED
+                                    || res == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED) {
+                                p.edit().putBoolean(SETUP_TILE, true).apply();
+                                buildSetup();
+                            }
+                        });
+                return;
+            } catch (Exception ignored) { }
+        }
+        new AlertDialog.Builder(this).setTitle("Add the Earth tile")
+                .setMessage("Swipe down twice from the top → tap the pencil → drag \u201CEarth\u201D into your tiles.")
+                .setPositiveButton("Done", (d, w) -> { p.edit().putBoolean(SETUP_TILE, true).apply(); buildSetup(); })
+                .setNegativeButton("Later", null).show();
     }
 
     private void toast(String s) { runOnUiThread(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show()); }
@@ -367,6 +491,7 @@ public class SettingsActivity extends Activity {
     }
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
+        if (req == 41) buildSetup();
         if (req == REQ_LOCATION && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) myLocation();
     }
 
