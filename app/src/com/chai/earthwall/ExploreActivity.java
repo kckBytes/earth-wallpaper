@@ -55,6 +55,24 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
     private String weatherText = "";
     private int weatherSeq;
 
+    private static final String CLOCK = "\u25F7", PAUSE = "\u23F8\uFE0E", PLAY = "\u25B6\uFE0E", WAIT = "\u2026";
+    private TextView time;
+    private android.view.View bar;
+    /** The clock button becomes pause / play while a replay runs, and "…" while the frames download. */
+    private final Runnable timeButton = new Runnable() {
+        @Override public void run() { syncTimeButton(); ui.postDelayed(this, 250); }
+    };
+    private void syncTimeButton() {
+        if (bar != null && gl.replayProgress() >= 0 && bar.getVisibility() != android.view.View.VISIBLE) {
+            bar.setVisibility(android.view.View.VISIBLE); bar.invalidate();
+        }
+        String g = gl.isFetching() ? WAIT : !gl.isReplaying() ? CLOCK : gl.isPaused() ? PLAY : PAUSE;
+        if (!g.contentEquals(time.getText())) {
+            time.setText(g);
+            time.setContentDescription(g.equals(CLOCK) ? "Replay the last hours (hold to fast-forward)" : g.equals(PLAY) ? "Play" : g.equals(PAUSE) ? "Pause" : "Downloading frames");
+        }
+    }
+
     private final Runnable clock = new Runnable() {
         @Override public void run() { updateSubtitle(); ui.postDelayed(this, 20_000); }
     };
@@ -95,19 +113,29 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
         row.addView(small("\u2212", v -> gl.zoomStep(-1)));                                    // zoom out
         row.addView(btn, new LinearLayout.LayoutParams(dp(150), dp(150)));
         row.addView(small("+", v -> gl.zoomStep(+1)));                                          // zoom in
-        TextView time = small("\u25F7", null);         // tap: replay the real past hours; hold: fast-forward time
+        // tap: replay the real past hours (while it plays: pause / play); hold: fast-forward time
+        time = small(CLOCK, null);
         final Runnable[] hold = new Runnable[1];
         time.setOnTouchListener((v, e) -> {
             int a2 = e.getActionMasked();
             if (a2 == MotionEvent.ACTION_DOWN) {
                 v.setPressed(true);
-                hold[0] = () -> { hold[0] = null; gl.setTimeWarp(true); };
+                hold[0] = () -> {                         // holding during a replay does nothing (tap = pause)
+                    hold[0] = null;
+                    if (gl.isReplaying() || gl.isFetching()) return;
+                    android.util.Log.i("EarthWall", "clock hold: fast-forward"); gl.setTimeWarp(true);
+                };
                 v.postDelayed(hold[0], 280);
             } else if (a2 == MotionEvent.ACTION_UP || a2 == MotionEvent.ACTION_CANCEL) {
                 v.setPressed(false);
                 if (hold[0] != null) {                  // a tap: the stored satellite frames, same as back triple-tap
                     v.removeCallbacks(hold[0]); hold[0] = null;
-                    if (a2 == MotionEvent.ACTION_UP) gl.playTimelapse();
+                    if (a2 == MotionEvent.ACTION_UP) {
+                        android.util.Log.i("EarthWall", "clock tap: replaying=" + gl.isReplaying() + " fetching=" + gl.isFetching());
+                        if (gl.isReplaying()) gl.togglePause();
+                        else if (!gl.isFetching()) gl.playTimelapse();
+                        v.postDelayed(this::syncTimeButton, 60);
+                    }
                 } else gl.setTimeWarp(false);
             }
             return true;
@@ -115,11 +143,30 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
         row.addView(time);
         FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(-1, dp(150), Gravity.BOTTOM);
         root.addView(row, bl);
+        // replay progress: a thin line above the buttons, only while a replay you started plays
+        final android.graphics.Paint track = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        track.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+        track.setStrokeWidth(dp(3));
+        bar = new android.view.View(this) {
+            @Override protected void onDraw(android.graphics.Canvas c) {
+                float p = gl.replayProgress();
+                if (p < 0) { setVisibility(GONE); return; }
+                float y = getHeight() / 2f, x0 = dp(40), x1 = getWidth() - dp(40);
+                track.setColor(0x40FFFFFF); c.drawLine(x0, y, x1, y, track);
+                track.setColor(0xE6FFFFFF); c.drawLine(x0, y, x0 + (x1 - x0) * p, y, track);
+                postInvalidateOnAnimation();
+            }
+        };
+        bar.setVisibility(android.view.View.GONE);
+        FrameLayout.LayoutParams pl = new FrameLayout.LayoutParams(-1, dp(12), Gravity.BOTTOM);
+        root.addView(bar, pl);
 
         root.setOnApplyWindowInsetsListener((v, in) -> {
             Insets s = in.getInsets(WindowInsets.Type.systemBars());
             bl.bottomMargin = s.bottom + dp(18);
             row.setLayoutParams(bl);
+            pl.bottomMargin = s.bottom + dp(18) + dp(150) + dp(6);
+            bar.setLayoutParams(pl);
             return WindowInsets.CONSUMED;
         });
         setContentView(root);
@@ -136,11 +183,13 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
         gl.setVisible(true, false);
         CloudUpdater.maybeUpdate(this, false);
         clock.run();
+        timeButton.run();
     }
 
     @Override protected void onPause() {
         gl.setVisible(false, false);
         ui.removeCallbacks(clock);
+        ui.removeCallbacks(timeButton);
         super.onPause();
     }
 

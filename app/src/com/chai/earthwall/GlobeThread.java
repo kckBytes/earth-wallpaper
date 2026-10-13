@@ -172,6 +172,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             wakePrep = null;
             if (wp != null && replay == null && wp.kind.equals(dataKind)) {
                 replay = new ReplayPlayer(wp.ts, wp.kind, WAKE_S, stepWeights(wp.ts), wp);
+                replayLabelled = false; paused = false;
                 tailNs = 0; lapseNs = 0;
                 Log.i(TAG, "wake replay: " + wp.ts.size() + " frames");
             } else lapseNs = wakeNs;
@@ -212,21 +213,89 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     /** Back triple-tap: replay the real past hours if the frames are on the phone, else the estimated time-lapse. */
     void playTimelapse() {
         h.post(() -> {
-            if (replay != null) return;
-            int hours = cfg.replayH;
-            java.util.List<Long> ts = dataKind.equals("sst") ? new java.util.ArrayList<>() : ReplayStore.available(ctx, dataKind, hours);
-            if (ts.size() >= 2) {
-                tailNs = 0;
-                replay = new ReplayPlayer(ts, dataKind, 2.2 + hours * 0.33, stepWeights(ts), null);
-                android.util.Log.i("EarthWall", "replay start: " + ts.size() + " frames, " + hours + " h");
-                if (glOk) r.setLabel(makeLabel("Last " + hours + " h"));
-                labelStartNs = System.nanoTime();
-            } else {
+            if (replay != null || fetching) { Log.i(TAG, "replay: busy (" + (replay != null ? "playing" : "fetching") + ")"); return; }
+            int hours = mode == MODE_EXPLORE ? 24 : cfg.replayH;        // control mode: the whole last day
+            final String kind = dataKind;
+            java.util.List<Long> ts = kind.equals("sst") ? new java.util.ArrayList<>() : ReplayStore.available(ctx, kind, hours);
+            // fewer than ~3/4 of the half-hour frames on the phone (new install, the wallpaper hasn't run long,
+            // mobile data only topped up the newest two): fetch them now, then play the real thing
+            if (!kind.equals("sst") && ts.size() < Math.max(2, hours * 2 * 3 / 4)) {
+                fetching = true;
+                Log.i(TAG, "replay: only " + ts.size() + " frames for " + hours + " h, fetching");
+                showLabel("Getting the real frames\u2026", true);
+                new Thread(() -> {
+                    try { ReplayStore.sync(ctx, Prefs.get(ctx), false, hours); }
+                    catch (Exception e) { Log.w(TAG, "replay fetch failed: " + e); }
+                    h.post(() -> {
+                        fetching = false;
+                        java.util.List<Long> got = dataKind.equals(kind) ? ReplayStore.available(ctx, kind, hours) : new java.util.ArrayList<>();
+                        if (got.size() >= 2) startReplay(got, hours);
+                        else { showLabel("No connection \u2014 estimated motion", false); lapseNs = System.nanoTime(); kick(); }
+                    });
+                }, "earth-replay-fetch").start();
+                return;
+            }
+            if (ts.size() >= 2) startReplay(ts, hours);
+            else {
                 lapseNs = System.nanoTime();
-                android.util.Log.i("EarthWall", "time-lapse start (no replay frames yet)");
+                Log.i(TAG, "time-lapse start (no replay frames for this view)");
             }
             kick();
         });
+    }
+
+    private boolean fetching;
+    private volatile boolean paused;
+    private int labelIdx = -2;
+
+    private void startReplay(java.util.List<Long> ts, int hours) {
+        tailNs = 0; lapseNs = 0; paused = false; labelIdx = -2; replayLabelled = true;
+        // about a second per hour (12 h = 12 s), slow enough to follow the clouds; ⏸ to stop on a moment
+        // literal playback: each real satellite picture in turn, on screen for a time in step with the real time
+        // between them (a 4 h gap in the data takes 8x a 30 min step), short crossfades, no estimated motion
+        double[] gaps = new double[Math.max(1, ts.size() - 1)];
+        for (int i = 0; i + 1 < ts.size(); i++) gaps[i] = Math.max(1.0, (ts.get(i + 1) - ts.get(i)) / 1_800_000.0);
+        replay = new ReplayPlayer(ts, dataKind, Math.max(8.0, hours * 0.8), gaps, null);
+        replay.literal = true;
+        replay.smooth = Prefs.get(ctx).getBoolean(Prefs.REPLAY_SMOOTH, true);
+        Log.i(TAG, "replay start: " + ts.size() + " frames, " + hours + " h");
+        replayHours = hours;
+        kick();
+    }
+    private int replayHours;
+    private boolean replayLabelled;                 // the wake spin-in replay stays unlabelled, as before
+
+    /** Control mode's pause button: freeze the replay on the moment shown (and again to carry on). */
+    void togglePause() { h.post(() -> { if (replay != null) { paused = !paused; labelIdx = -2; kick(); } }); }
+    boolean isReplaying() { return replay != null; }
+    boolean isFetching() { return fetching; }
+    /** 0..1 through the replay you started, or -1. */
+    float replayProgress() {
+        ReplayPlayer rp = replay;
+        if (rp == null || !replayLabelled || rp.t.length < 2) return -1f;
+        return (float) Math.max(0, Math.min(1, rp.pos / (rp.t.length - 1)));
+    }
+    boolean isPaused() { return paused && replay != null; }
+
+    /** A label that stays up (hold = true) until replaced, or fades after ~3 s. */
+    private void showLabel(String text, boolean hold) {
+        if (glOk) r.setLabel(makeLabel(text));
+        labelStartNs = System.nanoTime() - (hold ? 400_000_000L : 0);
+        labelHold = hold;
+    }
+    private boolean labelHold;
+
+    /** While replaying: "3:30 PM · 9 h ago", refreshed as each half-hour frame comes up. */
+    private void replayLabel(long now) {
+        if (replay == null || replay.a < 0 || !replayLabelled) return;
+        int idx = replay.a + (replay.mix() >= 0.5f ? 1 : 0);
+        if (idx == labelIdx) { if (paused) labelStartNs = now - 400_000_000L; return; }
+        labelIdx = idx;
+        long t = replay.t[Math.min(idx, replay.t.length - 1)];
+        long agoMin = Math.max(0, (System.currentTimeMillis() - t) / 60_000L);   // real age of this picture
+        String when = android.text.format.DateFormat.getTimeFormat(ctx).format(new java.util.Date(t));
+        String ago = agoMin < 30 ? "now" : agoMin < 90 ? "1 h ago" : Math.round(agoMin / 60.0) + " h ago";
+        showLabel((paused ? "\u23F8  " : "") + when + "  \u00B7  " + ago, true);
     }
 
     // ---- real replay: stream the stored frames through the two replay textures
@@ -278,6 +347,11 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         final java.util.concurrent.LinkedBlockingQueue<Object[]> q = new java.util.concurrent.LinkedBlockingQueue<>(3);
         final java.nio.ByteBuffer[] flows;
         volatile boolean cancelled;
+        boolean literal;            // a replay you started: the real pictures as they are (no motion estimate)
+        boolean smooth;             // ... with in-between frames along the fine measured motion, where the server has it
+        boolean fine(int i) { return i >= 0 && i < flows.length && flows[i] != null && flows[i].capacity() == ReplayStore.DW * ReplayStore.DH * 2; }
+        boolean moving() { return !literal || (smooth && fine(a)); }
+        long endHoldNs;             // literal: stays on the last real picture a moment before going live
         int a = -1;                 // index of the frame in texture A (B holds a + 1)
         double pos;                 // 0 .. n-1
         long lastNs, startNs;
@@ -333,8 +407,14 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 prepRow += rows;
             }
             double dt = Math.min((now - lastNs) / 1e9, 0.05); lastNs = now;
+            if (paused) return true;                                      // frozen on this moment
             pos += dt / stepS[Math.max(0, Math.min(stepS.length - 1, (int) pos))];
-            if (pos >= t.length - 1) return false;
+            if (pos >= t.length - 1) {
+                if (!literal) return false;
+                if (endHoldNs == 0) endHoldNs = now;
+                pos = t.length - 1 - 1e-6;                                // the last picture, fully shown
+                return now - endHoldNs < 2_000_000_000L || paused;
+            }
             if (pos >= a + 1) {                                           // step to the next pair
                 boolean ready = prep != null && prepIdx == a + 2 && prepRow >= prep.h;
                 if (!ready) { if (pos < a + 0.999) holds++; pos = a + 0.999; return true; }   // next frame not in yet: hold
@@ -345,10 +425,18 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             }
             return true;
         }
-        float mix() { return (float) Math.max(0, Math.min(1, pos - a)); }
-        float hours() { return a >= 0 && a + 1 < t.length ? (t[a + 1] - t[a]) / 3_600_000f : 0.5f; }
+        float mix() {
+            float m = (float) Math.max(0, Math.min(1, pos - a));
+            if (moving()) return m;                                       // in-between frames: both pictures slide
+            float k = Math.max(0f, Math.min(1f, (m - 0.72f) / 0.28f));      // hold the real picture, then a quick crossfade
+            return k * k * (3 - 2 * k);
+        }
+        float hours() { return !moving() ? 0f : a >= 0 && a + 1 < t.length ? (t[a + 1] - t[a]) / 3_600_000f : 0.5f; }
         /** The moment on screen (for the storm labels). */
-        long timeMs() { return a < 0 ? t[0] : a + 1 < t.length ? (long) (t[a] + mix() * (t[a + 1] - t[a])) : t[t.length - 1]; }
+        long timeMs() {                                               // smooth clock (sun, storms, weather)
+            double m = Math.max(0, Math.min(1, pos - a));
+            return a < 0 ? t[0] : a + 1 < t.length ? (long) (t[a] + m * (t[a + 1] - t[a])) : t[t.length - 1];
+        }
     }
 
     private long tailNs, tailT;
@@ -357,7 +445,10 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private void stepReplay(long now) {
         if (replay == null) { fr.replay = false; return; }
         boolean go = replay.step(now);
+        if (go) replayLabel(now);
         if (!go) {
+            paused = false;
+            if (labelHold) { labelHold = false; labelStartNs = now - 400_000_000L; }   // let the time label fade
             boolean played = replay.a >= 0;
             Log.i(TAG, String.format(java.util.Locale.US, "replay done: %d frames in %.1f s, waited for a frame %d times",
                     replay.t.length, (now - replay.startNs) / 1e9, replay.holds));
@@ -443,7 +534,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         }
         fr.wxMix = (float) mix;
         boolean overlay = cfg.wx >= 10 && wxView == cfg.wx;
-        fr.wxAmt = overlay ? Math.max(0f, Math.min(1f, cfg.wxAmt)) : 0f;
+        fr.wxAmt = overlay ? Math.max(0f, Math.min(1f, cfg.wxAmt)) * (1f - 0.5f * replayDim) : 0f;   // replay: the clouds come first
         fr.wxStyle = cfg.wxStyle;
         fr.wxChan = WxStore.channel(wxView);
         fr.wxPal = wxPalette(wxView);
@@ -454,7 +545,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         windMix = mix;
         streaks.step(dtS, this::windAt, camLat, camLon);
         fr.streaks = streaks.verts;
-        fr.streakAlpha = (0.38f + 0.17f * fr.wxAmt) * fr.fade;   // a little softer over the real Earth
+        fr.streakAlpha = (0.38f + 0.17f * fr.wxAmt) * fr.fade * (1f - 0.5f * replayDim);   // a little softer over the real Earth
         fr.sDayW = cfg.sDayW; fr.sNightW = cfg.sNightW; fr.sOutW = cfg.sOutW; fr.sOutA = cfg.sOutA; fr.sDark = cfg.sDark;
     }
 
@@ -498,6 +589,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     // ---- time warp (control mode): hold to fast-forward, release to snap back to now
     private volatile boolean warp;
     private double warpOffsetMs;
+    private double sunBackMs;                       // how far back the sun is shown (replays), eased to 0 after
+    private float replayDim;                        // 0..1 while a replay you started plays: weather layer steps back
     void setTimeWarp(boolean on) { warp = on; h.post(this::kick); }
 
     /** Control mode: zoom in/out one step around the current centre. */
@@ -583,7 +676,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             tweenTo(lockLat(next), next.lon, zoomed ? LOCK_ZOOM : 1, (long) (1100 + 900 * Math.min(1.0, ang / 120.0)), EASE_IN_OUT_CUBIC);
             twArc = Math.min(1.0, ang / 70.0);
             if (glOk) r.setLabel(makeLabel(next.name));
-            labelStartNs = System.nanoTime();
+            labelStartNs = System.nanoTime(); labelHold = false;
             kick();
         });
     }
@@ -597,7 +690,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             if (zoomed) {
                 markerCity = c;
                 if (glOk) r.setLabel(makeLabel(c.name));
-                labelStartNs = System.nanoTime();
+                labelStartNs = System.nanoTime(); labelHold = false;
             }
             kick();
         });
@@ -621,10 +714,10 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     }
 
     private float labelAlpha(long now) {
-        if (labelStartNs == 0) return 0f;
+        if (labelStartNs == 0) { labelHold = false; return 0f; }
         float t = (now - labelStartNs) / 1e9f;
         if (t < 0.4f) return t / 0.4f;
-        if (t < 3.2f) return 1f;
+        if (t < 3.2f || labelHold) return 1f;
         if (t < 4.0f) return 1f - (t - 3.2f) / 0.8f;
         labelStartNs = 0;
         return 0f;
@@ -820,12 +913,19 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
 
         if (warp) warpOffsetMs += dt * 7_200_000.0;                       // 2 hours per second
         else if (warpOffsetMs > 0) warpOffsetMs = warpOffsetMs < 60_000 ? 0 : warpOffsetMs * Math.exp(-6.0 * dt);
+        // a replay you start turns the sun back with it (day/night, city lights), then lets it run forward to now
+        if (replay != null && replayLabelled) {
+            double target = System.currentTimeMillis() - (replay.a >= 0 ? replay.timeMs() : replay.t[0]);
+            sunBackMs = replay.a >= 0 ? target : sunBackMs + (target - sunBackMs) * (1 - Math.exp(-8.0 * dt));
+        } else if (sunBackMs > 0) sunBackMs = sunBackMs < 60_000 ? 0 : sunBackMs * Math.exp(-3.0 * dt);
+        float dimTo = replay != null && replayLabelled ? 1f : 0f;
+        replayDim = Math.abs(replayDim - dimTo) < 0.01f ? dimTo : approach(replayDim, dimTo, 4f, dt);
         float wake = Math.min(1f, (frameNs - wakeNs) / 1.0e9f);
         float cloudMix = cloudFadeNs == 0 ? 1f : Math.min(1f, (frameNs - cloudFadeNs) / 3.0e9f);
         lapseOffsetMs(frameNs);                                         // ends the time-lapse when due
         stepReplay(frameNs);
-        boolean animating = replay != null || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || wake < 1f || readyFade < 1f || cloudMix < 1f
-                || labelStartNs != 0
+        boolean animating = (replay != null && !paused) || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || (sunBackMs > 0 && replay == null) || (replayDim > 0f && replay == null) || wake < 1f || readyFade < 1f || cloudMix < 1f
+                || (labelStartNs != 0 && !labelHold)
                 || Math.abs(zoomOut - zoomOutTarget) > 1e-3f || Math.abs(home - homeTarget) > 1e-3f;
         // Hand tremor alone moves the parallax by far less than a pixel: ignore it (deadband).
         boolean tilting = Math.abs(parX - gx) > 1.2e-3f || Math.abs(parY - gy) > 1.2e-3f;
@@ -883,7 +983,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         lat = Math.max(-80, Math.min(80, lat - parY * 45.0 / pzr));
         Astro.viewToEcef(lat, lon, fr.view);
         long nowMs = System.currentTimeMillis() + (long) warpOffsetMs;
-        fr.gmst = (float) Astro.sun(nowMs, fr.sun);
+        fr.gmst = (float) Astro.sun(nowMs - (long) sunBackMs, fr.sun);
 
         fr.w = width; fr.h = height; fr.cx = cx; fr.cy = cy; fr.radius = radius; fr.camDist = dist;
         fr.cloudMix = cloudMix; fr.nowMs = nowMs; fr.cloudNowMs = nowMs + (long) lapseOffsetMs(frameNs);
@@ -912,9 +1012,11 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         applyWx(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, sdt);
         projectDots(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
         projectStorms(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, dist, cx, cy, radius);
+        projectTracks(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
         fr.labelAmt = labelAlpha(frameNs) * readyFade;
         fr.labelCx = width * 0.5f;
-        fr.labelCy = Math.max(cy - radius - 46f * ctx.getResources().getDisplayMetrics().density * pixelScale,
+        fr.labelCy = replayLabelled && (replay != null || labelHold) ? height * 0.915f   // replay clock: at the top
+                : Math.max(cy - radius - 46f * ctx.getResources().getDisplayMetrics().density * pixelScale,
                 height * 0.07f);                                       // just under the globe
         r.draw(fr);
         if (!EGL14.eglSwapBuffers(dpy, window)) {
@@ -930,6 +1032,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private static final class Storm {
         String type, name, kind, detail; long lastObs, from, until; long[] t; double[] lat, lon;
         float w, h, ax, ay; int prio;
+        boolean ended;                                   // server: no longer active (drawn blue)
     }
     private List<Storm> storms = new ArrayList<>();
     private long stormsMtime = -1, stormsCheckNs;
@@ -952,6 +1055,85 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private long skyMtime = -1, auroraMtime = -1;
     private long[] fT = new long[0], bT = new long[0];
     private float[] fXyz = new float[0], fPow = new float[0], bXyz = new float[0], bN = new float[0];
+    private final java.nio.FloatBuffer trackBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_TRACK * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+    private final java.nio.FloatBuffer fixBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_TRACK * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+    private final double[] trackLL = new double[2];
+
+    /** Hurricanes / cyclones: the path so far (up to the moment on screen) and an arrow for where it's heading. */
+    private void projectTracks(long T) {
+        fr.trackN = fr.fixN = 0;
+        if (!cfg.storms || storms.isEmpty() || !Prefs.labelOn(cfg.mask, "storm")) return;
+        trackBuf.position(0); fixBuf.position(0);
+        int nv = 0, nf = 0;
+        final int CAP = GlobeRenderer.MAX_TRACK - 8;
+        fr.trackEndedN = fr.fixEndedN = 0;
+        for (int pass = 0; pass < 2; pass++)                          // ended (blue) first, then active (red)
+        for (Storm s : storms) {
+            if (!"storm".equals(s.type) || isEnded(s) != (pass == 0) || !stormAt(s, T, trackLL)) continue;
+            int k = 0;
+            while (k < s.t.length && s.t[k] <= T) k++;               // fixes already observed at T
+            double[] cur = ecef(trackLL[0], trackLL[1]);
+            for (int i = 0; i < k && nf < CAP; i++) {
+                float a = 0.30f + 0.60f * (i + 1) / (float) k;           // older = fainter
+                double[] p0 = ecef(s.lat[i], s.lon[i]);
+                fixBuf.put((float) p0[0]).put((float) p0[1]).put((float) p0[2]).put(a); nf++;
+                double[] p1 = i + 1 < k ? ecef(s.lat[i + 1], s.lon[i + 1]) : cur;
+                float a1 = i + 1 < k ? 0.30f + 0.60f * (i + 2) / (float) k : 0.95f;
+                double ang = Math.acos(Math.max(-1, Math.min(1, p0[0] * p1[0] + p0[1] * p1[1] + p0[2] * p1[2])));
+                int steps = Math.max(1, Math.min(24, (int) Math.ceil(Math.toDegrees(ang) / 0.8)));
+                double[] prev = p0;
+                for (int j = 1; j <= steps && nv < CAP; j++) {             // follow the curve of the Earth
+                    double f = j / (double) steps;
+                    double[] q = norm(p0[0] + (p1[0] - p0[0]) * f, p0[1] + (p1[1] - p0[1]) * f, p0[2] + (p1[2] - p0[2]) * f);
+                    float aa = (float) (a + (a1 - a) * f);
+                    putV(trackBuf, prev, aa); putV(trackBuf, q, aa); nv += 2;
+                    prev = q;
+                }
+            }
+            // heading: from where it was 3 h earlier to now, as a small arrow just ahead of the storm
+            if (stormAt(s, Math.max(s.t[0], T - 3 * 3_600_000L), trackLL)) {
+                double[] was = ecef(trackLL[0], trackLL[1]);
+                double dx = cur[0] - was[0], dy = cur[1] - was[1], dz = cur[2] - was[2];
+                double rad = dx * cur[0] + dy * cur[1] + dz * cur[2];
+                dx -= rad * cur[0]; dy -= rad * cur[1]; dz -= rad * cur[2];      // along the surface
+                double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (len > 1e-6 && nv < CAP) {
+                    dx /= len; dy /= len; dz /= len;
+                    double nx = cur[1] * dz - cur[2] * dy, ny = cur[2] * dx - cur[0] * dz, nz = cur[0] * dy - cur[1] * dx;
+                    double[] st = norm(cur[0] + dx * 0.014, cur[1] + dy * 0.014, cur[2] + dz * 0.014);
+                    double[] tip = norm(cur[0] + dx * 0.05, cur[1] + dy * 0.05, cur[2] + dz * 0.05);
+                    double[] wl = norm(tip[0] - dx * 0.016 + nx * 0.012, tip[1] - dy * 0.016 + ny * 0.012, tip[2] - dz * 0.016 + nz * 0.012);
+                    double[] wr = norm(tip[0] - dx * 0.016 - nx * 0.012, tip[1] - dy * 0.016 - ny * 0.012, tip[2] - dz * 0.016 - nz * 0.012);
+                    putV(trackBuf, st, 1f); putV(trackBuf, tip, 1f);
+                    putV(trackBuf, tip, 1f); putV(trackBuf, wl, 1f);
+                    putV(trackBuf, tip, 1f); putV(trackBuf, wr, 1f);
+                    nv += 6;
+                }
+            }
+            if (pass == 0) { fr.trackEndedN = nv; fr.fixEndedN = nf; }
+        }
+        trackBuf.position(0); fixBuf.position(0);
+        fr.trackLines = trackBuf; fr.trackN = nv;
+        fr.trackFixes = fixBuf; fr.fixN = nf;
+    }
+    /** The server marks a storm that's no longer active ("Tropical storm · ended"). */
+    private static boolean isEnded(Storm s) { return s.ended || (s.kind != null && s.kind.endsWith("ended")); }
+    private static boolean isHazard(String type) {
+        return type.equals("storm") || type.equals("volcano") || type.equals("quake") || type.equals("fire") || type.equals("flood");
+    }
+
+    private static double[] ecef(double latDeg, double lonDeg) {
+        double la = Math.toRadians(latDeg), lo = Math.toRadians(lonDeg);
+        return new double[]{Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)};
+    }
+    private static double[] norm(double x, double y, double z) {
+        double l = Math.sqrt(x * x + y * y + z * z);
+        return new double[]{x / l, y / l, z / l};
+    }
+    private static void putV(java.nio.FloatBuffer b, double[] p, float a) {
+        b.put((float) p[0]).put((float) p[1]).put((float) p[2]).put(a);
+    }
+
     private final java.nio.FloatBuffer fireBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_DOTS * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
     private final java.nio.FloatBuffer boltBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_DOTS * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
     private final java.util.Random flick = new java.util.Random();
@@ -1026,7 +1208,9 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         stormsCheckNs = frameNs;
         java.io.File f = new java.io.File(ctx.getFilesDir(), "storms.json");
         java.io.File fs = new java.io.File(ctx.getFilesDir(), "sats.json"), fk = new java.io.File(ctx.getFilesDir(), "sky.json");
-        long m = (f.exists() ? f.lastModified() : 0) + (fs.exists() ? fs.lastModified() : 0) + (fk.exists() ? fk.lastModified() : 0);
+        java.io.File fl = Requests.cache(ctx);
+        long m = (f.exists() ? f.lastModified() : 0) + (fs.exists() ? fs.lastModified() : 0) + (fk.exists() ? fk.lastModified() : 0)
+                + (fl.exists() ? fl.lastModified() : 0) + Requests.version(ctx);
         loadSky(fk);
         if (m == stormsMtime) return;
         stormsMtime = m;
@@ -1052,6 +1236,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                     s.from = o.optLong("from", s.t[0] - 3 * H);
                     s.until = o.optLong("until", Math.max(s.lastObs, s.t[s.t.length - 1]) + 6 * H);
                     s.prio = prioOf(s.type);
+                    s.ended = o.optBoolean("ended", false) || s.kind.endsWith("ended");
                     out.add(s);
                 }
             }
@@ -1087,6 +1272,27 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 }
             }
         } catch (Exception e) { Log.w(TAG, "sky labels unreadable", e); }
+        try {                                                            // launches you asked to follow (Settings > Requests)
+            java.util.Map<String, org.json.JSONObject> lm = Requests.launched(ctx);
+            for (Requests.Req rq : Requests.list(ctx)) {
+                org.json.JSONObject o = lm.get(rq.id);
+                if (o == null || !o.optBoolean("available")) continue;
+                org.json.JSONArray tr = o.optJSONArray("track");
+                if (tr == null || tr.length() < 2) continue;
+                Storm s = new Storm();
+                s.type = "sat"; s.name = o.optString("mission", rq.mission);
+                int n = o.optInt("objects", 1);
+                s.kind = o.optString("rocket", rq.rocket) + (n > 1 ? " \u00B7 " + n + " objects" : "");
+                s.detail = o.optInt("alt_km", 0) > 0 ? o.optInt("alt_km") + " km up" : "";
+                s.t = new long[tr.length()]; s.lat = new double[tr.length()]; s.lon = new double[tr.length()];
+                for (int k = 0; k < tr.length(); k++) {
+                    org.json.JSONArray q = tr.getJSONArray(k);
+                    s.t[k] = q.getLong(0); s.lat[k] = q.getDouble(1); s.lon[k] = q.getDouble(2);
+                }
+                s.from = s.t[0]; s.until = s.t[s.t.length - 1]; s.lastObs = s.until; s.prio = 1;
+                out.add(s);
+            }
+        } catch (Exception e) { Log.w(TAG, "requested launches unreadable", e); }
         out.sort((x, y) -> Integer.compare(x.prio, y.prio));
         while (out.size() > GlobeRenderer.MAX_STORMS) out.remove(out.size() - 1);
         storms = out;
@@ -1140,12 +1346,16 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         int w = (int) Math.ceil(pad * 2 + gr * 2 + gap + Math.max(name.measureText(s.name), sub.measureText(line2)));
         int h = (int) Math.ceil(pad * 2 + nameH + subH);
         // Man-made things in orbit or on the way up: Saab cockpit green with a black outline (Life OS Cockpit colours).
+        // Hazards (storms, eruptions, quakes, fires, floods): red while active, blue once over (storm paths match,
+        // projectTracks). Rockets keep the green, blinking while they launch (projectStorms).
         boolean manMade = s.type.equals("sat") || s.type.equals("camera") || s.type.equals("launch");
+        boolean storm = isHazard(s.type), ended = storm && isEnded(s);
+        int lcd = !storm ? 0xFF5CFF86 : ended ? 0xFF4DA3FF : 0xFFFF4A3D, txt = !storm ? 0xFFCFF5D6 : ended ? 0xFFC9E2FF : 0xFFFFC9C2;
         Paint nameOut = null, subOut = null;
-        if (manMade) {
+        if (manMade || storm) {
             name.clearShadowLayer(); sub.clearShadowLayer();
-            name.setColor(0xFF5CFF86);                           // the LCD green
-            sub.setColor(0xFFCFF5D6);                            // phosphor text green
+            name.setColor(lcd);                                  // the LCD green / hazard red / ended blue
+            sub.setColor(txt);                                   // phosphor text
             nameOut = new Paint(name);
             nameOut.setColor(0xFF000000);
             nameOut.setStyle(Paint.Style.STROKE);
@@ -1167,11 +1377,11 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         g.setStrokeCap(Paint.Cap.ROUND);
         g.setStrokeJoin(Paint.Join.ROUND);
         Paint[] glyphPasses;
-        if (manMade) {
+        if (manMade || storm) {
             Paint go = new Paint(g);                             // black outline under the green glyph
             go.setColor(0xFF000000);
             go.setStrokeWidth(1.6f * d + 2.4f * d);
-            g.setColor(0xFF5CFF86);
+            g.setColor(lcd);
             glyphPasses = new Paint[]{go, g};
         } else {
             g.setShadowLayer(3 * d, 0, 0, 0xC0000000);
@@ -1251,6 +1461,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         return true;
     }
 
+    private static final float[] LABEL_SCALES = {1f, 0.66f, 0.45f};
+    private static final long LAUNCH_WIN = 10 * 60_000L;          // a launch blinks from 10 min before to 10 min after
     private void projectStorms(long T, float dist, float cx, float cy, float radius) {
         fr.stormN = 0;
         if (!cfg.storms || storms.isEmpty()) return;
@@ -1265,6 +1477,12 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             fr.stormN = i + 1;
             if (!Prefs.labelOn(cfg.mask, s.type)) continue;           // category switched off: frees its spot
             if (!stormAt(s, T, stormLL)) continue;
+            float blink = 1f;
+            if (s.type.equals("launch")) {
+                long dt = T - s.lastObs;                                   // lastObs = lift-off time
+                if (dt > LAUNCH_WIN) continue;                             // gone: there's no flight path to follow
+                if (dt >= -LAUNCH_WIN) blink = (System.nanoTime() / 450_000_000L) % 2 == 0 ? 1f : 0.25f;   // launching
+            }
             double la = Math.toRadians(stormLL[0]), lo = Math.toRadians(stormLL[1]);
             double ex = Math.cos(la) * Math.cos(lo), ey = Math.cos(la) * Math.sin(lo), ez = Math.sin(la);
             double vx = m[0] * ex + m[1] * ey + m[2] * ez, vy = m[3] * ex + m[4] * ey + m[5] * ez, vz = m[6] * ex + m[7] * ey + m[8] * ez;
@@ -1272,15 +1490,22 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             if (facing <= 1.0) continue;
             double dz = dist - vz;
             float x = (float) (cx + vx / dz / tanA * radius), y = (float) (cy + vy / dz / tanA * radius);
-            // screen box of this label (GL px, y up); skip it if it would overlap one already placed
-            float l = x - s.ax - margin, rr = x - s.ax + s.w + margin, top = y + s.ay + margin, bot = y + s.ay - s.h - margin;
-            boolean hit = false;
-            for (int k = 0; k < np && !hit; k++)
-                hit = l < placed[4 * k + 1] && rr > placed[4 * k] && bot < placed[4 * k + 2] && top > placed[4 * k + 3];
-            if (hit) continue;
+            // screen box of this label (GL px, y up). Nothing is ever hidden for lack of room: a label that would
+            // overlap one already placed is tried smaller, and the smallest size is drawn regardless (zoom in to read it)
+            float k = 1f, l = 0, rr = 0, top = 0, bot = 0;
+            for (float tryK : LABEL_SCALES) {
+                k = tryK;
+                float mg = margin * k;
+                l = x - s.ax * k - mg; rr = x + (s.w - s.ax) * k + mg; top = y + s.ay * k + mg; bot = y + (s.ay - s.h) * k - mg;
+                boolean hit = false;
+                for (int q = 0; q < np && !hit; q++)
+                    hit = l < placed[4 * q + 1] && rr > placed[4 * q] && bot < placed[4 * q + 2] && top > placed[4 * q + 3];
+                if (!hit) break;
+            }
+            fr.stormScale[i] = k;
             float edge = (float) Math.min(1.0, (facing - 1.0) / 0.9);       // fades well before the limb
             float life = (float) Math.min(1.0, Math.min((T - s.from) / fadeMs, (s.until - T) / fadeMs));
-            float amt = Math.max(0f, edge * life * 0.85f * fr.fade);
+            float amt = Math.max(0f, edge * life * 0.85f * fr.fade * blink);
             if (amt <= 0.01f) continue;
             fr.stormX[i] = x; fr.stormY[i] = y; fr.stormAmt[i] = amt;
             placed[4 * np] = l; placed[4 * np + 1] = rr; placed[4 * np + 2] = top; placed[4 * np + 3] = bot; np++;
