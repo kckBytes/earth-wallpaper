@@ -248,6 +248,7 @@ public class SettingsActivity extends Activity {
 
         header("Replay (back triple-tap)");
         steps("Replay the last", Prefs.REPLAY_H, Prefs.REPLAY_CHOICES, 12, " h");
+        toggle("Smooth replay: in-between frames along the measured cloud motion (off = only the real pictures)", Prefs.REPLAY_SMOOTH, true);
         TextView rHint = text("Plays the real satellite record of the past hours: clouds forming, drifting, dissolving. "
                 + "The phone keeps only that many hours of frames (about 0.4 MB per half hour) and fetches the past day on Wi-Fi.", 12, false);
         rHint.setAlpha(0.6f);
@@ -352,7 +353,7 @@ public class SettingsActivity extends Activity {
             Prefs.PARALLAX_GAIN, Prefs.MARKER, Prefs.STORMS, Prefs.STREAKS, Prefs.S_DAY_W, Prefs.S_NIGHT_W, Prefs.S_OUT_W,
             Prefs.S_OUT_A, Prefs.S_DARK, Prefs.TWIST, Prefs.FLIP, Prefs.KNOCK, Prefs.STARS, Prefs.HD_WIFI_ONLY,
             Prefs.LIVE_CLOUDS, Prefs.CLOUDS_SRC, Prefs.VIEW, Prefs.WX, Prefs.WX_AMT, Prefs.WX_STYLE, Prefs.BORDERS,
-            Prefs.MASK, Prefs.REPLAY_H, Prefs.FOLLOW};
+            Prefs.MASK, Prefs.REPLAY_H, Prefs.FOLLOW, Prefs.REPLAY_SMOOTH};
 
     private void confirmReset() {
         android.widget.CheckBox cities = new android.widget.CheckBox(this);

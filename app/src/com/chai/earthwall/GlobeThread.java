@@ -257,6 +257,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         for (int i = 0; i + 1 < ts.size(); i++) gaps[i] = Math.max(1.0, (ts.get(i + 1) - ts.get(i)) / 1_800_000.0);
         replay = new ReplayPlayer(ts, dataKind, Math.max(8.0, hours * 0.8), gaps, null);
         replay.literal = true;
+        replay.smooth = Prefs.get(ctx).getBoolean(Prefs.REPLAY_SMOOTH, true);
         Log.i(TAG, "replay start: " + ts.size() + " frames, " + hours + " h");
         replayHours = hours;
         kick();
@@ -347,6 +348,9 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         final java.nio.ByteBuffer[] flows;
         volatile boolean cancelled;
         boolean literal;            // a replay you started: the real pictures as they are (no motion estimate)
+        boolean smooth;             // ... with in-between frames along the fine measured motion, where the server has it
+        boolean fine(int i) { return i >= 0 && i < flows.length && flows[i] != null && flows[i].capacity() == ReplayStore.DW * ReplayStore.DH * 2; }
+        boolean moving() { return !literal || (smooth && fine(a)); }
         long endHoldNs;             // literal: stays on the last real picture a moment before going live
         int a = -1;                 // index of the frame in texture A (B holds a + 1)
         double pos;                 // 0 .. n-1
@@ -423,11 +427,11 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         }
         float mix() {
             float m = (float) Math.max(0, Math.min(1, pos - a));
-            if (!literal) return m;
+            if (moving()) return m;                                       // in-between frames: both pictures slide
             float k = Math.max(0f, Math.min(1f, (m - 0.72f) / 0.28f));      // hold the real picture, then a quick crossfade
             return k * k * (3 - 2 * k);
         }
-        float hours() { return literal ? 0f : a >= 0 && a + 1 < t.length ? (t[a + 1] - t[a]) / 3_600_000f : 0.5f; }
+        float hours() { return !moving() ? 0f : a >= 0 && a + 1 < t.length ? (t[a + 1] - t[a]) / 3_600_000f : 0.5f; }
         /** The moment on screen (for the storm labels). */
         long timeMs() {                                               // smooth clock (sun, storms, weather)
             double m = Math.max(0, Math.min(1, pos - a));
@@ -1028,6 +1032,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private static final class Storm {
         String type, name, kind, detail; long lastObs, from, until; long[] t; double[] lat, lon;
         float w, h, ax, ay; int prio;
+        boolean ended;                                   // server: no longer active (drawn blue)
     }
     private List<Storm> storms = new ArrayList<>();
     private long stormsMtime = -1, stormsCheckNs;
@@ -1062,7 +1067,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         int nv = 0, nf = 0;
         final int CAP = GlobeRenderer.MAX_TRACK - 8;
         fr.trackEndedN = fr.fixEndedN = 0;
-        for (int pass = 0; pass < 2; pass++)                          // ended (red) first, then live (green)
+        for (int pass = 0; pass < 2; pass++)                          // ended (blue) first, then active (red)
         for (Storm s : storms) {
             if (!"storm".equals(s.type) || isEnded(s) != (pass == 0) || !stormAt(s, T, trackLL)) continue;
             int k = 0;
@@ -1112,7 +1117,10 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         fr.trackFixes = fixBuf; fr.fixN = nf;
     }
     /** The server marks a storm that's no longer active ("Tropical storm · ended"). */
-    private static boolean isEnded(Storm s) { return s.kind != null && s.kind.endsWith("ended"); }
+    private static boolean isEnded(Storm s) { return s.ended || (s.kind != null && s.kind.endsWith("ended")); }
+    private static boolean isHazard(String type) {
+        return type.equals("storm") || type.equals("volcano") || type.equals("quake") || type.equals("fire") || type.equals("flood");
+    }
 
     private static double[] ecef(double latDeg, double lonDeg) {
         double la = Math.toRadians(latDeg), lo = Math.toRadians(lonDeg);
@@ -1226,6 +1234,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                     s.from = o.optLong("from", s.t[0] - 3 * H);
                     s.until = o.optLong("until", Math.max(s.lastObs, s.t[s.t.length - 1]) + 6 * H);
                     s.prio = prioOf(s.type);
+                    s.ended = o.optBoolean("ended", false) || s.kind.endsWith("ended");
                     out.add(s);
                 }
             }
@@ -1314,14 +1323,15 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         int w = (int) Math.ceil(pad * 2 + gr * 2 + gap + Math.max(name.measureText(s.name), sub.measureText(line2)));
         int h = (int) Math.ceil(pad * 2 + nameH + subH);
         // Man-made things in orbit or on the way up: Saab cockpit green with a black outline (Life OS Cockpit colours).
-        // Hurricanes / cyclones the same way: green while live, red once it has ended (with their paths, projectTracks).
+        // Hazards (storms, eruptions, quakes, fires, floods): red while active, blue once over (storm paths match,
+        // projectTracks). Rockets keep the green, blinking while they launch (projectStorms).
         boolean manMade = s.type.equals("sat") || s.type.equals("camera") || s.type.equals("launch");
-        boolean storm = s.type.equals("storm"), ended = storm && isEnded(s);
-        int lcd = ended ? 0xFFFF4A3D : 0xFF5CFF86, txt = ended ? 0xFFFFC9C2 : 0xFFCFF5D6;
+        boolean storm = isHazard(s.type), ended = storm && isEnded(s);
+        int lcd = !storm ? 0xFF5CFF86 : ended ? 0xFF4DA3FF : 0xFFFF4A3D, txt = !storm ? 0xFFCFF5D6 : ended ? 0xFFC9E2FF : 0xFFFFC9C2;
         Paint nameOut = null, subOut = null;
         if (manMade || storm) {
             name.clearShadowLayer(); sub.clearShadowLayer();
-            name.setColor(lcd);                                  // the LCD green (red: an ended storm)
+            name.setColor(lcd);                                  // the LCD green / hazard red / ended blue
             sub.setColor(txt);                                   // phosphor text
             nameOut = new Paint(name);
             nameOut.setColor(0xFF000000);
@@ -1429,6 +1439,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     }
 
     private static final float[] LABEL_SCALES = {1f, 0.66f, 0.45f};
+    private static final long LAUNCH_WIN = 10 * 60_000L;          // a launch blinks from 10 min before to 10 min after
     private void projectStorms(long T, float dist, float cx, float cy, float radius) {
         fr.stormN = 0;
         if (!cfg.storms || storms.isEmpty()) return;
@@ -1443,6 +1454,12 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             fr.stormN = i + 1;
             if (!Prefs.labelOn(cfg.mask, s.type)) continue;           // category switched off: frees its spot
             if (!stormAt(s, T, stormLL)) continue;
+            float blink = 1f;
+            if (s.type.equals("launch")) {
+                long dt = T - s.lastObs;                                   // lastObs = lift-off time
+                if (dt > LAUNCH_WIN) continue;                             // gone: there's no flight path to follow
+                if (dt >= -LAUNCH_WIN) blink = (System.nanoTime() / 450_000_000L) % 2 == 0 ? 1f : 0.25f;   // launching
+            }
             double la = Math.toRadians(stormLL[0]), lo = Math.toRadians(stormLL[1]);
             double ex = Math.cos(la) * Math.cos(lo), ey = Math.cos(la) * Math.sin(lo), ez = Math.sin(la);
             double vx = m[0] * ex + m[1] * ey + m[2] * ez, vy = m[3] * ex + m[4] * ey + m[5] * ez, vz = m[6] * ex + m[7] * ey + m[8] * ez;
@@ -1465,7 +1482,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             fr.stormScale[i] = k;
             float edge = (float) Math.min(1.0, (facing - 1.0) / 0.9);       // fades well before the limb
             float life = (float) Math.min(1.0, Math.min((T - s.from) / fadeMs, (s.until - T) / fadeMs));
-            float amt = Math.max(0f, edge * life * 0.85f * fr.fade);
+            float amt = Math.max(0f, edge * life * 0.85f * fr.fade * blink);
             if (amt <= 0.01f) continue;
             fr.stormX[i] = x; fr.stormY[i] = y; fr.stormAmt[i] = amt;
             placed[4 * np] = l; placed[4 * np + 1] = rr; placed[4 * np + 2] = top; placed[4 * np + 3] = bot; np++;
