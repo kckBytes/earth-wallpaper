@@ -501,7 +501,7 @@ public class SettingsActivity extends Activity {
     /** {done, total} for the setup checklist; also used by the after-update notification. */
     static int[] setupProgress(Context c) {
         SharedPreferences sp = Prefs.get(c);
-        boolean notify = Updater.enabled(c);
+        boolean notify = true;                                    // alerts: launches you can follow (+ updates)
         boolean[] d = {sp.contains(Prefs.CITY_LAT), wallpaperSet(c), sp.getBoolean(SETUP_TILE, false),
                 !notify || notifyAllowed(c), sp.getBoolean(SETUP_CONTROL, false)};
         int n = 0;
@@ -535,7 +535,7 @@ public class SettingsActivity extends Activity {
 
     private void buildSetup() {
         setup.removeAllViews();
-        boolean notify = Updater.enabled(this);                   // only the shared app gets update notifications
+        boolean notify = true;                                    // alerts: launches you can follow (+ updates, shared app)
         boolean[] done = {stepHome(), stepWallpaper(), p.getBoolean(SETUP_TILE, false), !notify || stepNotify(), p.getBoolean(SETUP_CONTROL, false)};
         int total = notify ? 5 : 4, n = 0;
         for (int i = 0; i < done.length; i++) if (done[i] && (notify || i != 3)) n++;
@@ -561,7 +561,8 @@ public class SettingsActivity extends Activity {
                 "Set", v -> openPicker());
         setupRow(done[2], "Add the Earth tile", "Swipe down on the lock screen, tap Earth: zoom, cities, time-lapse, no unlock",
                 "Add", v -> addTile());
-        if (notify) setupRow(done[3], "Allow update alerts", "So you hear when a new version is out",
+        if (notify) setupRow(done[3], "Allow alerts", Updater.enabled(this)
+                        ? "New versions, and rockets you can follow after they launch" : "Rockets you can follow after they launch",
                 "Allow", v -> requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41));
         setupRow(done[4], "Try control mode", "Buttons for zoom, next city, and hold ◷ to fast-forward the clouds",
                 "Try", v -> { p.edit().putBoolean(SETUP_CONTROL, true).apply(); startActivity(new Intent(this, ExploreActivity.class)); });
