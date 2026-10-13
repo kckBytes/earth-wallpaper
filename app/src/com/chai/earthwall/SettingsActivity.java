@@ -40,7 +40,8 @@ import java.util.concurrent.Executors;
 public class SettingsActivity extends Activity {
     private SharedPreferences p;
     private LinearLayout col;
-    private TextView status, city, update;
+    private TextView status, city;
+    private Button update;
     private LinearLayout cityList;
     private final ExecutorService net = Executors.newSingleThreadExecutor();
     private static final int REQ_LOCATION = 7;
@@ -67,12 +68,21 @@ public class SettingsActivity extends Activity {
         status.setAlpha(0.7f);
         col.addView(status);
 
-        // tap-to-update (golden app only): shows when a newer build is published
-        update = text("", 15, true);
-        update.setTextColor(0xFF7FC8FF);
+        // tap-to-update (golden app only): a big red button at the top whenever a newer build is published
+        update = new Button(this);
+        update.setAllCaps(false);
+        update.setTextColor(0xFFFFFFFF);
+        update.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 17);
+        update.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        android.graphics.drawable.GradientDrawable red = new android.graphics.drawable.GradientDrawable();
+        red.setColor(0xFFD93025);
+        red.setCornerRadius(dp(28));
+        update.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x40FFFFFF), red, null));
+        update.setPadding(dp(20), dp(14), dp(20), dp(14));
         update.setVisibility(android.view.View.GONE);
         update.setOnClickListener(v -> startActivity(new android.content.Intent(this, UpdateActivity.class)));
-        col.addView(update, lp(dp(10)));
+        col.addView(update, lp(dp(14)));
         if (Updater.enabled(this) && android.os.Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41);
@@ -257,7 +267,7 @@ public class SettingsActivity extends Activity {
     private void showUpdate() {
         Updater.Info u = Updater.pending(this);
         if (u == null) { update.setVisibility(android.view.View.GONE); return; }
-        update.setText("Update ready: Earth " + u.name + "  ›  tap to install");
+        update.setText("Update to Earth " + u.name);
         update.setVisibility(android.view.View.VISIBLE);
     }
 
