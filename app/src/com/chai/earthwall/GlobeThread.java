@@ -213,7 +213,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     /** Back triple-tap: replay the real past hours if the frames are on the phone, else the estimated time-lapse. */
     void playTimelapse() {
         h.post(() -> {
-            if (replay != null || fetching) return;
+            if (replay != null || fetching) { Log.i(TAG, "replay: busy (" + (replay != null ? "playing" : "fetching") + ")"); return; }
             int hours = cfg.replayH;
             final String kind = dataKind;
             java.util.List<Long> ts = kind.equals("sst") ? new java.util.ArrayList<>() : ReplayStore.available(ctx, kind, hours);
@@ -251,7 +251,12 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private void startReplay(java.util.List<Long> ts, int hours) {
         tailNs = 0; lapseNs = 0; paused = false; labelIdx = -2; replayLabelled = true;
         // about a second per hour (12 h = 12 s), slow enough to follow the clouds; ⏸ to stop on a moment
-        replay = new ReplayPlayer(ts, dataKind, Math.max(8.0, hours * 1.0), stepWeights(ts), null);
+        // literal playback: each real satellite picture in turn, on screen for a time in step with the real time
+        // between them (a 4 h gap in the data takes 8x a 30 min step), short crossfades, no estimated motion
+        double[] gaps = new double[Math.max(1, ts.size() - 1)];
+        for (int i = 0; i + 1 < ts.size(); i++) gaps[i] = Math.max(1.0, (ts.get(i + 1) - ts.get(i)) / 1_800_000.0);
+        replay = new ReplayPlayer(ts, dataKind, Math.max(8.0, hours * 1.0), gaps, null);
+        replay.literal = true;
         Log.i(TAG, "replay start: " + ts.size() + " frames, " + hours + " h");
         replayHours = hours;
         kick();
@@ -286,9 +291,9 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         if (idx == labelIdx) { if (paused) labelStartNs = now - 400_000_000L; return; }
         labelIdx = idx;
         long t = replay.t[Math.min(idx, replay.t.length - 1)];
-        long agoMin = Math.max(0, (replay.t[replay.t.length - 1] - t) / 60_000L);
+        long agoMin = Math.max(0, (System.currentTimeMillis() - t) / 60_000L);   // real age of this picture
         String when = android.text.format.DateFormat.getTimeFormat(ctx).format(new java.util.Date(t));
-        String ago = agoMin < 30 ? "latest" : agoMin < 90 ? "1 h ago" : Math.round(agoMin / 60.0) + " h ago";
+        String ago = agoMin < 30 ? "now" : agoMin < 90 ? "1 h ago" : Math.round(agoMin / 60.0) + " h ago";
         showLabel((paused ? "\u23F8  " : "") + when + "  \u00B7  " + ago, true);
     }
 
@@ -341,6 +346,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         final java.util.concurrent.LinkedBlockingQueue<Object[]> q = new java.util.concurrent.LinkedBlockingQueue<>(3);
         final java.nio.ByteBuffer[] flows;
         volatile boolean cancelled;
+        boolean literal;            // a replay you started: the real pictures as they are (no motion estimate)
+        long endHoldNs;             // literal: stays on the last real picture a moment before going live
         int a = -1;                 // index of the frame in texture A (B holds a + 1)
         double pos;                 // 0 .. n-1
         long lastNs, startNs;
@@ -398,7 +405,12 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             double dt = Math.min((now - lastNs) / 1e9, 0.05); lastNs = now;
             if (paused) return true;                                      // frozen on this moment
             pos += dt / stepS[Math.max(0, Math.min(stepS.length - 1, (int) pos))];
-            if (pos >= t.length - 1) return false;
+            if (pos >= t.length - 1) {
+                if (!literal) return false;
+                if (endHoldNs == 0) endHoldNs = now;
+                pos = t.length - 1 - 1e-6;                                // the last picture, fully shown
+                return now - endHoldNs < 2_000_000_000L || paused;
+            }
             if (pos >= a + 1) {                                           // step to the next pair
                 boolean ready = prep != null && prepIdx == a + 2 && prepRow >= prep.h;
                 if (!ready) { if (pos < a + 0.999) holds++; pos = a + 0.999; return true; }   // next frame not in yet: hold
@@ -409,10 +421,18 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             }
             return true;
         }
-        float mix() { return (float) Math.max(0, Math.min(1, pos - a)); }
-        float hours() { return a >= 0 && a + 1 < t.length ? (t[a + 1] - t[a]) / 3_600_000f : 0.5f; }
+        float mix() {
+            float m = (float) Math.max(0, Math.min(1, pos - a));
+            if (!literal) return m;
+            float k = Math.max(0f, Math.min(1f, (m - 0.72f) / 0.28f));      // hold the real picture, then a quick crossfade
+            return k * k * (3 - 2 * k);
+        }
+        float hours() { return literal ? 0f : a >= 0 && a + 1 < t.length ? (t[a + 1] - t[a]) / 3_600_000f : 0.5f; }
         /** The moment on screen (for the storm labels). */
-        long timeMs() { return a < 0 ? t[0] : a + 1 < t.length ? (long) (t[a] + mix() * (t[a + 1] - t[a])) : t[t.length - 1]; }
+        long timeMs() {                                               // smooth clock (sun, storms, weather)
+            double m = Math.max(0, Math.min(1, pos - a));
+            return a < 0 ? t[0] : a + 1 < t.length ? (long) (t[a] + m * (t[a + 1] - t[a])) : t[t.length - 1];
+        }
     }
 
     private long tailNs, tailT;
