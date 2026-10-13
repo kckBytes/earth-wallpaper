@@ -101,6 +101,7 @@ final class CloudUpdater {
 
     static void maybeUpdate(Context ctx, boolean force) {
         final Context c = ctx.getApplicationContext();
+        Updater.check(c, false);                                  // app updates: at most every 6 h, golden app only
         final SharedPreferences p = Prefs.get(c);
         ConnectivityManager cm = c.getSystemService(ConnectivityManager.class);
         Network net = cm.getActiveNetwork();
