@@ -44,12 +44,13 @@ final class GlobeRenderer {
     // weather views: two model sheets (the times around "now") + palettes; wind streaks
     private final int[] wxTex = new int[3];            // 0, 1 sheets; 2 palette
     private int uWxMix, uWxChan, uWxPal, uWxClouds, uWxAmt, uWxStyle;
-    private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, sColor, sRound, sPoint, streakVbo, streakIbo, streakIdx, dotVbo;
+    private int streakProg, sView, sCenter, sRadius, sCamDist, sRes, sAlpha, sColor, sRound, sPoint, streakVbo, streakIbo, streakIdx, dotVbo, trackVbo;
     private int sSun, sHalo, sInk, sOffset;
     // ribbons: one instanced quad per trail segment
     private int ribProg, rView, rCenter, rRadius, rCamDist, rRes, rSun, rK, rWN, rWD, rOut, rAlpha, rDark, rOutA, cornerVbo;
     private float maxLine = 1f;                       // widest line this GPU draws (for the streaks' dark outline)
     static final int MAX_DOTS = 4096;
+    static final int MAX_TRACK = 4096;                   // hurricane paths: line vertices (pairs) + their 6-hourly fixes
     private int auroraTex, uAuroraAmt, bordersTex, uBorderAmt;
     float renderScale = 1f;                        // < 1: shade into an offscreen buffer, then upscale
     private int fbo, fboTex, fboW, fboH;
@@ -68,6 +69,7 @@ final class GlobeRenderer {
         int stormN;                                // storm labels: anchor (storm centre, GL px) and opacity
         final float[] stormX = new float[MAX_STORMS], stormY = new float[MAX_STORMS], stormAmt = new float[MAX_STORMS];
         final float[] stormScale = new float[MAX_STORMS];          // < 1: drawn smaller so it fits among the others
+        java.nio.FloatBuffer trackLines, trackFixes; int trackN, fixN;   // hurricane paths (GL_LINES pairs) and fixes
         boolean stars;
         long nowMs, cloudNowMs;           // cloudNowMs: clock for cloud motion (runs behind during a time-lapse)
         int mode;                         // shader view: 0 natural, 1 infrared, 2 sea temperature, 3 night lights
@@ -161,6 +163,9 @@ final class GlobeRenderer {
             int[] bb = new int[2];
             GLES20.glGenBuffers(2, bb, 0);
             streakVbo = bb[0]; streakIbo = bb[1];
+            int[] tb = new int[1]; GLES20.glGenBuffers(1, tb, 0); trackVbo = tb[0];
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, trackVbo);
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, MAX_TRACK * 2 * 16, null, GLES20.GL_STREAM_DRAW);
             int[] db = new int[1]; GLES20.glGenBuffers(1, db, 0); dotVbo = db[0];
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, dotVbo);
             GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, MAX_DOTS * 16, null, GLES20.GL_STREAM_DRAW);
@@ -428,6 +433,42 @@ final class GlobeRenderer {
         GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, 0);
     }
 
+    /** Hurricane / cyclone paths: where it has been (6-hourly fixes, older = fainter) and an arrow where it's heading. */
+    private void drawTracks(Frame f) {
+        if (streakProg == 0 || f.trackN == 0) return;
+        GLES20.glUseProgram(streakProg);
+        GLES20.glUniformMatrix3fv(sView, 1, false, f.view, 0);
+        GLES20.glUniform2f(sCenter, f.cx, f.cy);
+        GLES20.glUniform1f(sRadius, f.radius);
+        GLES20.glUniform1f(sCamDist, f.camDist);
+        GLES20.glUniform2f(sRes, f.w, f.h);
+        GLES30.glUniform1i(sHalo, 0);
+        GLES20.glUniform1f(sInk, 0f);
+        GLES20.glUniform2f(sOffset, 0f, 0f);
+        GLES20.glUniform1f(sAlpha, f.fade);
+        GLES20.glUniform3f(sColor, 1f, 0.50f, 0.38f);                // warm coral: reads over white cloud and dark sea
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, trackVbo);
+        GLES20.glEnableVertexAttribArray(0);
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, f.trackN * 16, f.trackLines);
+        GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, 0);
+        GLES30.glUniform1i(sRound, 0);
+        GLES20.glUniform1f(sPoint, 1f);
+        GLES20.glLineWidth(Math.min(maxLine, Math.max(2f, f.w / 420f)));
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, f.trackN);
+        if (f.fixN > 0) {
+            GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, f.trackN * 16, f.fixN * 16, f.trackFixes);
+            GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, f.trackN * 16);
+            GLES30.glUniform1i(sRound, 1);
+            GLES20.glUniform1f(sPoint, Math.max(f.w / 150f, f.radius / 100f));
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, f.fixN);
+        }
+        GLES20.glDisable(GLES20.GL_BLEND);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);
+        GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, 0);
+    }
+
     private void drawDots(Frame f) {
         if (streakProg == 0 || (f.fireN == 0 && f.boltN == 0)) return;
         GLES20.glUseProgram(streakProg);
@@ -621,6 +662,7 @@ final class GlobeRenderer {
         }
         drawStreaks(f);
         drawDots(f);
+        drawTracks(f);
         drawStorms(f);
         drawLabel(f);
     }
