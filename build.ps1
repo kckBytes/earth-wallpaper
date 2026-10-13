@@ -20,7 +20,7 @@ New-Item -ItemType Directory "$out\gen", "$out\classes", "$out\dex" -Force | Out
 run "$bt\aapt2.exe" @('compile', '--dir', "$root\app\res", '-o', "$out\res.zip")
 run "$bt\aapt2.exe" @('link', '-o', "$out\base.apk", '-I', $jar,
     '--manifest', "$root\app\AndroidManifest.xml", '--custom-package', 'com.chai.earthwall', '-A', "$root\app\assets", '--java', "$out\gen",
-    '--min-sdk-version', '30', '--target-sdk-version', '36', '--version-code', '4', '--version-name', '1.3',
+    '--min-sdk-version', '30', '--target-sdk-version', '36', '--version-code', '5', '--version-name', '1.4',
     '-0', 'jpg', "$out\res.zip")
 
 "[2/6] javac"
