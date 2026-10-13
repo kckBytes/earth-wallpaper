@@ -916,7 +916,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         // a replay you start turns the sun back with it (day/night, city lights), then lets it run forward to now
         if (replay != null && replayLabelled) {
             double target = System.currentTimeMillis() - (replay.a >= 0 ? replay.timeMs() : replay.t[0]);
-            sunBackMs = replay.a >= 0 ? target : sunBackMs + (target - sunBackMs) * (1 - Math.exp(-8.0 * dt));
+            sunBackMs += (target - sunBackMs) * (1 - Math.exp(-5.0 * dt));   // glides back (no jump at the start)
         } else if (sunBackMs > 0) sunBackMs = sunBackMs < 60_000 ? 0 : sunBackMs * Math.exp(-3.0 * dt);
         float dimTo = replay != null && replayLabelled ? 1f : 0f;
         replayDim = Math.abs(replayDim - dimTo) < 0.01f ? dimTo : approach(replayDim, dimTo, 4f, dt);
@@ -1015,7 +1015,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         projectTracks(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
         fr.labelAmt = labelAlpha(frameNs) * readyFade;
         fr.labelCx = width * 0.5f;
-        fr.labelCy = replayLabelled && (replay != null || labelHold) ? height * 0.915f   // replay clock: at the top
+        fr.labelCy = mode == MODE_EXPLORE && replayLabelled && (replay != null || labelHold) ? height * 0.915f   // control mode: clock on top
                 : Math.max(cy - radius - 46f * ctx.getResources().getDisplayMetrics().density * pixelScale,
                 height * 0.07f);                                       // just under the globe
         r.draw(fr);
