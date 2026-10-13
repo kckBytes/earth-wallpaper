@@ -28,7 +28,8 @@ import java.net.URL;
 final class Updater {
     static final String GOLDEN = "com.chai.earthwall";
     static final String FEED = "https://raw.githubusercontent.com/kckBytes/earth-live/dist/version.json";
-    private static final String CH = "updates", TAG = "EarthUpdate";
+    static final String CH = "updates";
+    private static final String TAG = "EarthUpdate";
     private static final long EVERY = 6 * 3_600_000L;
 
     static final class Info {
