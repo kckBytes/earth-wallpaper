@@ -5,6 +5,7 @@ import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Insets;
 import android.graphics.Typeface;
@@ -249,6 +250,12 @@ public class SettingsActivity extends Activity {
         });
         col.addView(refresh, lp(dp(8)));
 
+        header("Reset");
+        Button reset = new Button(this);
+        reset.setText("Reset settings to defaults");
+        reset.setOnClickListener(v -> confirmReset());
+        col.addView(reset, lp(dp(6)));
+
         TextView credits = text("Sun position computed live. Live clouds: GOES-East, GOES-West, Himawari (NASA GIBS) and "
                 + "Meteosat MTG + Indian Ocean (EUMETSAT) stitched every 10 min at github.com/kckBytes/earth-live, with "
                 + "GHRSST sea-surface temperature and SRTM elevation. Classic: clouds.matteason.co.uk (CC0). "
@@ -319,14 +326,61 @@ public class SettingsActivity extends Activity {
         Toast.makeText(this, "Added " + c.name, Toast.LENGTH_SHORT).show();
     }
 
+    // ------------------------------------------------------------------ reset
+
+    /** Every look / motion / layer setting this screen changes. Downloaded clouds and app updates are kept. */
+    private static final String[] SETTINGS = {Prefs.HORIZON, Prefs.SIZE, Prefs.HEIGHT, Prefs.MOTION, Prefs.PARALLAX,
+            Prefs.PARALLAX_GAIN, Prefs.MARKER, Prefs.STORMS, Prefs.STREAKS, Prefs.S_DAY_W, Prefs.S_NIGHT_W, Prefs.S_OUT_W,
+            Prefs.S_OUT_A, Prefs.S_DARK, Prefs.TWIST, Prefs.FLIP, Prefs.KNOCK, Prefs.STARS, Prefs.HD_WIFI_ONLY,
+            Prefs.LIVE_CLOUDS, Prefs.CLOUDS_SRC, Prefs.VIEW, Prefs.WX, Prefs.WX_AMT, Prefs.WX_STYLE, Prefs.BORDERS,
+            Prefs.MASK, Prefs.REPLAY_H};
+
+    private void confirmReset() {
+        android.widget.CheckBox cities = new android.widget.CheckBox(this);
+        cities.setText("Also forget my cities and home");
+        LinearLayout box = new LinearLayout(this);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(cities);
+        new AlertDialog.Builder(this).setTitle("Reset settings?")
+                .setMessage("Size, position, motion, layers and streak look go back to how they came. The setup guide shows again.")
+                .setView(box)
+                .setPositiveButton("Reset", (d, w) -> {
+                    SharedPreferences.Editor e = p.edit();
+                    for (String k : SETTINGS) e.remove(k);
+                    e.remove(SETUP_CONTROL).remove(SETUP_HIDDEN);   // (the tile stays ticked: it's still added)
+                    if (cities.isChecked()) e.remove(Prefs.CITY_NAME).remove(Prefs.CITY_LAT).remove(Prefs.CITY_LON).remove(Prefs.PRESETS);
+                    e.apply();
+                    Toast.makeText(this, "Settings reset", Toast.LENGTH_SHORT).show();
+                    recreate();
+                }).setNegativeButton("Cancel", null).show();
+    }
+
     // ------------------------------------------------------------------ setup checklist
 
     private boolean stepHome() { return p.contains(Prefs.CITY_LAT); }
+    private boolean stepWallpaper() { return wallpaperSet(this); }
+    private boolean stepNotify() { return notifyAllowed(this); }
 
-    private boolean stepWallpaper() {
+    /** {done, total} for the setup checklist; also used by the after-update notification. */
+    static int[] setupProgress(Context c) {
+        SharedPreferences sp = Prefs.get(c);
+        boolean notify = Updater.enabled(c);
+        boolean[] d = {sp.contains(Prefs.CITY_LAT), wallpaperSet(c), sp.getBoolean(SETUP_TILE, false),
+                !notify || notifyAllowed(c), sp.getBoolean(SETUP_CONTROL, false)};
+        int n = 0;
+        for (int i = 0; i < d.length; i++) if (d[i] && (notify || i != 3)) n++;
+        return new int[]{n, notify ? 5 : 4};
+    }
+
+    static boolean notifyAllowed(Context c) {
+        return android.os.Build.VERSION.SDK_INT < 33
+                || c.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    static boolean wallpaperSet(Context c) {
         try {
-            WallpaperManager wm = WallpaperManager.getInstance(this);
-            ComponentName me = new ComponentName(this, EarthWallpaperService.class);
+            WallpaperManager wm = WallpaperManager.getInstance(c);
+            ComponentName me = new ComponentName(c, EarthWallpaperService.class);
             android.app.WallpaperInfo h = wm.getWallpaperInfo();
             if (h != null && me.equals(h.getComponent())) return true;
             if (android.os.Build.VERSION.SDK_INT >= 34) {
@@ -335,11 +389,6 @@ public class SettingsActivity extends Activity {
             }
         } catch (Exception ignored) { }
         return false;
-    }
-
-    private boolean stepNotify() {
-        return android.os.Build.VERSION.SDK_INT < 33
-                || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
     }
 
     private void buildSetup() {
