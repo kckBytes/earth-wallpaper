@@ -289,11 +289,25 @@ public class SettingsActivity extends Activity {
                     if (q.isEmpty()) return;
                     net.execute(() -> {
                         try {
-                            List<Address> r = new Geocoder(this, Locale.getDefault()).getFromLocationName(q, 1);
+                            // up to 5 matches, each shown with its region and country, and you pick: a loose spelling
+                            // used to silently take the first guess (and label it with what you typed)
+                            List<Address> r = new Geocoder(this, Locale.getDefault()).getFromLocationName(q, 5);
                             if (r == null || r.isEmpty()) { toast("Couldn't find " + q); return; }
-                            Address a = r.get(0);
-                            Prefs.City c = new Prefs.City(a.getLocality() != null ? a.getLocality() : q, a.getLatitude(), a.getLongitude());
-                            runOnUiThread(() -> addCityToList(c));
+                            String[] lines = new String[r.size()];
+                            Prefs.City[] picks = new Prefs.City[r.size()];
+                            for (int i = 0; i < r.size(); i++) {
+                                Address a = r.get(i);
+                                String name = a.getLocality() != null ? a.getLocality()
+                                        : a.getFeatureName() != null ? a.getFeatureName() : q;
+                                StringBuilder where = new StringBuilder(name);
+                                if (a.getAdminArea() != null && !a.getAdminArea().equals(name)) where.append(", ").append(a.getAdminArea());
+                                if (a.getCountryName() != null) where.append(", ").append(a.getCountryName());
+                                lines[i] = where + String.format(Locale.US, "\n%.2f°, %.2f°", a.getLatitude(), a.getLongitude());
+                                picks[i] = new Prefs.City(name, a.getLatitude(), a.getLongitude());
+                            }
+                            runOnUiThread(() -> new AlertDialog.Builder(this).setTitle("Which one?")
+                                    .setItems(lines, (dd, which) -> addCityToList(picks[which]))
+                                    .setNegativeButton("None of these", null).show());
                         } catch (Exception e) { toast("Search failed — check your connection"); }
                     });
                 }).setNegativeButton("Cancel", null).show();
