@@ -1061,8 +1061,10 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         trackBuf.position(0); fixBuf.position(0);
         int nv = 0, nf = 0;
         final int CAP = GlobeRenderer.MAX_TRACK - 8;
+        fr.trackEndedN = fr.fixEndedN = 0;
+        for (int pass = 0; pass < 2; pass++)                          // ended (red) first, then live (green)
         for (Storm s : storms) {
-            if (!"storm".equals(s.type) || !stormAt(s, T, trackLL)) continue;
+            if (!"storm".equals(s.type) || isEnded(s) != (pass == 0) || !stormAt(s, T, trackLL)) continue;
             int k = 0;
             while (k < s.t.length && s.t[k] <= T) k++;               // fixes already observed at T
             double[] cur = ecef(trackLL[0], trackLL[1]);
@@ -1103,11 +1105,15 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                     nv += 6;
                 }
             }
+            if (pass == 0) { fr.trackEndedN = nv; fr.fixEndedN = nf; }
         }
         trackBuf.position(0); fixBuf.position(0);
         fr.trackLines = trackBuf; fr.trackN = nv;
         fr.trackFixes = fixBuf; fr.fixN = nf;
     }
+    /** The server marks a storm that's no longer active ("Tropical storm · ended"). */
+    private static boolean isEnded(Storm s) { return s.kind != null && s.kind.endsWith("ended"); }
+
     private static double[] ecef(double latDeg, double lonDeg) {
         double la = Math.toRadians(latDeg), lo = Math.toRadians(lonDeg);
         return new double[]{Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)};
@@ -1308,12 +1314,15 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         int w = (int) Math.ceil(pad * 2 + gr * 2 + gap + Math.max(name.measureText(s.name), sub.measureText(line2)));
         int h = (int) Math.ceil(pad * 2 + nameH + subH);
         // Man-made things in orbit or on the way up: Saab cockpit green with a black outline (Life OS Cockpit colours).
+        // Hurricanes / cyclones the same way: green while live, red once it has ended (with their paths, projectTracks).
         boolean manMade = s.type.equals("sat") || s.type.equals("camera") || s.type.equals("launch");
+        boolean storm = s.type.equals("storm"), ended = storm && isEnded(s);
+        int lcd = ended ? 0xFFFF4A3D : 0xFF5CFF86, txt = ended ? 0xFFFFC9C2 : 0xFFCFF5D6;
         Paint nameOut = null, subOut = null;
-        if (manMade) {
+        if (manMade || storm) {
             name.clearShadowLayer(); sub.clearShadowLayer();
-            name.setColor(0xFF5CFF86);                           // the LCD green
-            sub.setColor(0xFFCFF5D6);                            // phosphor text green
+            name.setColor(lcd);                                  // the LCD green (red: an ended storm)
+            sub.setColor(txt);                                   // phosphor text
             nameOut = new Paint(name);
             nameOut.setColor(0xFF000000);
             nameOut.setStyle(Paint.Style.STROKE);
@@ -1335,11 +1344,11 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         g.setStrokeCap(Paint.Cap.ROUND);
         g.setStrokeJoin(Paint.Join.ROUND);
         Paint[] glyphPasses;
-        if (manMade) {
+        if (manMade || storm) {
             Paint go = new Paint(g);                             // black outline under the green glyph
             go.setColor(0xFF000000);
             go.setStrokeWidth(1.6f * d + 2.4f * d);
-            g.setColor(0xFF5CFF86);
+            g.setColor(lcd);
             glyphPasses = new Paint[]{go, g};
         } else {
             g.setShadowLayer(3 * d, 0, 0, 0xC0000000);

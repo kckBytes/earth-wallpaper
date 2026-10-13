@@ -70,6 +70,7 @@ final class GlobeRenderer {
         final float[] stormX = new float[MAX_STORMS], stormY = new float[MAX_STORMS], stormAmt = new float[MAX_STORMS];
         final float[] stormScale = new float[MAX_STORMS];          // < 1: drawn smaller so it fits among the others
         java.nio.FloatBuffer trackLines, trackFixes; int trackN, fixN;   // hurricane paths (GL_LINES pairs) and fixes
+        int trackEndedN, fixEndedN;                // the first ones belong to storms that have ended (drawn red)
         boolean stars;
         long nowMs, cloudNowMs;           // cloudNowMs: clock for cloud motion (runs behind during a time-lapse)
         int mode;                         // shader view: 0 natural, 1 infrared, 2 sea temperature, 3 night lights
@@ -446,7 +447,6 @@ final class GlobeRenderer {
         GLES20.glUniform1f(sInk, 0f);
         GLES20.glUniform2f(sOffset, 0f, 0f);
         GLES20.glUniform1f(sAlpha, f.fade);
-        GLES20.glUniform3f(sColor, 1f, 0.50f, 0.38f);                // warm coral: reads over white cloud and dark sea
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, trackVbo);
@@ -455,14 +455,25 @@ final class GlobeRenderer {
         GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, 0);
         GLES30.glUniform1i(sRound, 0);
         GLES20.glUniform1f(sPoint, 1f);
-        GLES20.glLineWidth(Math.min(maxLine, Math.max(2f, f.w / 420f)));
+        // ended storms in red, live ones in the cockpit green (the same colours as their labels), on a black outline
+        float lw = Math.min(maxLine - 3f, Math.max(2f, f.w / 420f));
+        GLES20.glUniform3f(sColor, 0f, 0f, 0f);
+        GLES20.glLineWidth(Math.max(1f, Math.min(maxLine, lw + 3f)));
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, f.trackN);
+        GLES20.glLineWidth(Math.max(1f, lw));
+        if (f.trackEndedN > 0) { GLES20.glUniform3f(sColor, 1f, 0.29f, 0.24f); GLES20.glDrawArrays(GLES20.GL_LINES, 0, f.trackEndedN); }
+        if (f.trackN > f.trackEndedN) { GLES20.glUniform3f(sColor, 0.36f, 1f, 0.53f); GLES20.glDrawArrays(GLES20.GL_LINES, f.trackEndedN, f.trackN - f.trackEndedN); }
         if (f.fixN > 0) {
             GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, f.trackN * 16, f.fixN * 16, f.trackFixes);
             GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, f.trackN * 16);
             GLES30.glUniform1i(sRound, 1);
             GLES20.glUniform1f(sPoint, Math.max(f.w / 150f, f.radius / 100f));
+            GLES20.glUniform3f(sColor, 0f, 0f, 0f);
+            GLES20.glUniform1f(sPoint, Math.max(f.w / 150f, f.radius / 100f) + 4f);
             GLES20.glDrawArrays(GLES20.GL_POINTS, 0, f.fixN);
+            GLES20.glUniform1f(sPoint, Math.max(f.w / 150f, f.radius / 100f));
+            if (f.fixEndedN > 0) { GLES20.glUniform3f(sColor, 1f, 0.29f, 0.24f); GLES20.glDrawArrays(GLES20.GL_POINTS, 0, f.fixEndedN); }
+            if (f.fixN > f.fixEndedN) { GLES20.glUniform3f(sColor, 0.36f, 1f, 0.53f); GLES20.glDrawArrays(GLES20.GL_POINTS, f.fixEndedN, f.fixN - f.fixEndedN); }
         }
         GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo);
