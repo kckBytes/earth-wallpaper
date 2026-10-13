@@ -50,7 +50,7 @@ public class SettingsActivity extends Activity {
     private final ExecutorService net = Executors.newSingleThreadExecutor();
     private static final int REQ_LOCATION = 7, REQ_FOLLOW = 8, REQ_FOLLOW_BG = 9;
     private Switch follow;
-    private boolean chainFollow, followPending;
+    private boolean followPending;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -339,7 +339,6 @@ public class SettingsActivity extends Activity {
             Prefs.setHome(p, c);
             Toast.makeText(this, "Home set to " + c.name, Toast.LENGTH_SHORT).show();
             onResume();
-            if (chainFollow) { chainFollow = false; if (!followOn(this)) startFollow(); }   // setup: straight on to "all the time"
             return;
         }
         buildCityList();
@@ -385,11 +384,11 @@ public class SettingsActivity extends Activity {
     static int[] setupProgress(Context c) {
         SharedPreferences sp = Prefs.get(c);
         boolean notify = Updater.enabled(c);
-        boolean[] d = {sp.contains(Prefs.CITY_LAT), followOn(c), wallpaperSet(c), sp.getBoolean(SETUP_TILE, false),
+        boolean[] d = {sp.contains(Prefs.CITY_LAT), wallpaperSet(c), sp.getBoolean(SETUP_TILE, false),
                 !notify || notifyAllowed(c), sp.getBoolean(SETUP_CONTROL, false)};
         int n = 0;
-        for (int i = 0; i < d.length; i++) if (d[i] && (notify || i != 4)) n++;
-        return new int[]{n, notify ? 6 : 5};
+        for (int i = 0; i < d.length; i++) if (d[i] && (notify || i != 3)) n++;
+        return new int[]{n, notify ? 5 : 4};
     }
 
     /** Location "Allow all the time" granted and following switched on. */
@@ -419,9 +418,9 @@ public class SettingsActivity extends Activity {
     private void buildSetup() {
         setup.removeAllViews();
         boolean notify = Updater.enabled(this);                   // only the shared app gets update notifications
-        boolean[] done = {stepHome(), followOn(this), stepWallpaper(), p.getBoolean(SETUP_TILE, false), !notify || stepNotify(), p.getBoolean(SETUP_CONTROL, false)};
-        int total = notify ? 6 : 5, n = 0;
-        for (int i = 0; i < done.length; i++) if (done[i] && (notify || i != 4)) n++;
+        boolean[] done = {stepHome(), stepWallpaper(), p.getBoolean(SETUP_TILE, false), !notify || stepNotify(), p.getBoolean(SETUP_CONTROL, false)};
+        int total = notify ? 5 : 4, n = 0;
+        for (int i = 0; i < done.length; i++) if (done[i] && (notify || i != 3)) n++;
         if (n >= total || p.getBoolean(SETUP_HIDDEN, false)) { setup.setVisibility(android.view.View.GONE); return; }
         setup.setVisibility(android.view.View.VISIBLE);
         android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
@@ -433,23 +432,20 @@ public class SettingsActivity extends Activity {
 
         TextView head = text("Set up Earth  ·  " + n + " of " + total + " done", 17, true);
         setup.addView(head);
-        TextView sub = text((total == 6 ? "Six" : "Five") + " quick steps so it works the way it's meant to.", 13, false);
+        TextView sub = text((total == 5 ? "Five" : "Four") + " quick steps so it works the way it's meant to.", 13, false);
         sub.setAlpha(0.7f);
         setup.addView(sub);
 
         Prefs.City home = Prefs.home(p);
         setupRow(done[0], "Your home city", done[0] ? "Centred on " + home.name : "The globe turns to face it every time the screen wakes",
-                "Use my location", v -> { homeFromNextAdd = true; chainFollow = true; myLocation(); });
-        setupRow(done[1], "Location: Allow all the time", done[1] ? "Home follows you when you travel"
-                        : "So the globe follows you when you travel, with no app open. Choose \u201CAllow all the time\u201D",
-                "Allow", v -> startFollow());
-        setupRow(done[2], "Set it as your wallpaper", "Lock screen (and home screen if you like)",
+                "Use my location", v -> { homeFromNextAdd = true; myLocation(); });
+        setupRow(done[1], "Set it as your wallpaper", "Lock screen (and home screen if you like)",
                 "Set", v -> openPicker());
-        setupRow(done[3], "Add the Earth tile", "Swipe down on the lock screen, tap Earth: zoom, cities, time-lapse, no unlock",
+        setupRow(done[2], "Add the Earth tile", "Swipe down on the lock screen, tap Earth: zoom, cities, time-lapse, no unlock",
                 "Add", v -> addTile());
-        if (notify) setupRow(done[4], "Allow update alerts", "So you hear when a new version is out",
+        if (notify) setupRow(done[3], "Allow update alerts", "So you hear when a new version is out",
                 "Allow", v -> requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41));
-        setupRow(done[5], "Try control mode", "Buttons for zoom, next city, and hold ◷ to fast-forward the clouds",
+        setupRow(done[4], "Try control mode", "Buttons for zoom, next city, and hold ◷ to fast-forward the clouds",
                 "Try", v -> { p.edit().putBoolean(SETUP_CONTROL, true).apply(); startActivity(new Intent(this, ExploreActivity.class)); });
 
         TextView skip = text("Hide this", 13, false);
