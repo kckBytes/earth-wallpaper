@@ -55,6 +55,20 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
     private String weatherText = "";
     private int weatherSeq;
 
+    private static final String CLOCK = "\u25F7", PAUSE = "\u23F8\uFE0E", PLAY = "\u25B6\uFE0E", WAIT = "\u2026";
+    private TextView time;
+    /** The clock button becomes pause / play while a replay runs, and "…" while the frames download. */
+    private final Runnable timeButton = new Runnable() {
+        @Override public void run() { syncTimeButton(); ui.postDelayed(this, 250); }
+    };
+    private void syncTimeButton() {
+        String g = gl.isFetching() ? WAIT : !gl.isReplaying() ? CLOCK : gl.isPaused() ? PLAY : PAUSE;
+        if (!g.contentEquals(time.getText())) {
+            time.setText(g);
+            time.setContentDescription(g.equals(CLOCK) ? "Replay the last hours (hold to fast-forward)" : g.equals(PLAY) ? "Play" : g.equals(PAUSE) ? "Pause" : "Downloading frames");
+        }
+    }
+
     private final Runnable clock = new Runnable() {
         @Override public void run() { updateSubtitle(); ui.postDelayed(this, 20_000); }
     };
@@ -95,7 +109,8 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
         row.addView(small("\u2212", v -> gl.zoomStep(-1)));                                    // zoom out
         row.addView(btn, new LinearLayout.LayoutParams(dp(150), dp(150)));
         row.addView(small("+", v -> gl.zoomStep(+1)));                                          // zoom in
-        TextView time = small("\u25F7", null);         // tap: replay the real past hours; hold: fast-forward time
+        // tap: replay the real past hours (while it plays: pause / play); hold: fast-forward time
+        time = small(CLOCK, null);
         final Runnable[] hold = new Runnable[1];
         time.setOnTouchListener((v, e) -> {
             int a2 = e.getActionMasked();
@@ -107,7 +122,11 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
                 v.setPressed(false);
                 if (hold[0] != null) {                  // a tap: the stored satellite frames, same as back triple-tap
                     v.removeCallbacks(hold[0]); hold[0] = null;
-                    if (a2 == MotionEvent.ACTION_UP) gl.playTimelapse();
+                    if (a2 == MotionEvent.ACTION_UP) {
+                        if (gl.isReplaying()) gl.togglePause();
+                        else if (!gl.isFetching()) gl.playTimelapse();
+                        v.postDelayed(this::syncTimeButton, 60);
+                    }
                 } else gl.setTimeWarp(false);
             }
             return true;
@@ -136,11 +155,13 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
         gl.setVisible(true, false);
         CloudUpdater.maybeUpdate(this, false);
         clock.run();
+        timeButton.run();
     }
 
     @Override protected void onPause() {
         gl.setVisible(false, false);
         ui.removeCallbacks(clock);
+        ui.removeCallbacks(timeButton);
         super.onPause();
     }
 

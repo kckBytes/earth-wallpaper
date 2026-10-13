@@ -72,6 +72,7 @@ final class Prefs {
     static final String REPLAY_H = "replay_hours";      // back triple-tap replay length
     static final int[] REPLAY_CHOICES = {3, 6, 9, 12, 18, 24};
     static final String REFRESH = "refresh_token";
+    static final String FOLLOW = "follow_me";          // home moves with you when you travel (Locate.follow)
 
     // written by CloudUpdater
     static final String CLOUDS_CHECKED = "clouds_checked";
