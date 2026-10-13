@@ -67,6 +67,7 @@ final class GlobeRenderer {
         float auroraAmt, borderAmt;
         int stormN;                                // storm labels: anchor (storm centre, GL px) and opacity
         final float[] stormX = new float[MAX_STORMS], stormY = new float[MAX_STORMS], stormAmt = new float[MAX_STORMS];
+        final float[] stormScale = new float[MAX_STORMS];          // < 1: drawn smaller so it fits among the others
         boolean stars;
         long nowMs, cloudNowMs;           // cloudNowMs: clock for cloud motion (runs behind during a time-lapse)
         int mode;                         // shader view: 0 natural, 1 infrared, 2 sea temperature, 3 night lights
@@ -444,7 +445,7 @@ final class GlobeRenderer {
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);         // dots glow
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, dotVbo);
         GLES20.glEnableVertexAttribArray(0);
-        float s = Math.max(4f, f.radius / 120f);
+        float s = Math.max(f.w / 180f, f.radius / 120f);          // never smaller than ~2 dp, even on the whole globe
         if (f.fireN > 0) {
             GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, f.fireN * 16, f.fireDots);
             GLES20.glVertexAttribPointer(0, 4, GLES20.GL_FLOAT, false, 0, 0);
@@ -494,9 +495,10 @@ final class GlobeRenderer {
                 any = true;
             }
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, stormTex[i]);
-            float left = f.stormX[i] - stormAx[i], top = f.stormY[i] + stormAy[i];
-            GLES20.glUniform4f(uLabRect, left / f.w * 2f - 1f, (top - stormH[i]) / f.h * 2f - 1f,
-                    (left + stormW[i]) / f.w * 2f - 1f, top / f.h * 2f - 1f);
+            float k = f.stormScale[i] > 0f ? f.stormScale[i] : 1f;
+            float left = f.stormX[i] - stormAx[i] * k, top = f.stormY[i] + stormAy[i] * k;
+            GLES20.glUniform4f(uLabRect, left / f.w * 2f - 1f, (top - stormH[i] * k) / f.h * 2f - 1f,
+                    (left + stormW[i] * k) / f.w * 2f - 1f, top / f.h * 2f - 1f);
             GLES20.glUniform1f(uLabAlpha, f.stormAmt[i]);
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
         }

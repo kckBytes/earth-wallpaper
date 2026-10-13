@@ -57,11 +57,15 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
 
     private static final String CLOCK = "\u25F7", PAUSE = "\u23F8\uFE0E", PLAY = "\u25B6\uFE0E", WAIT = "\u2026";
     private TextView time;
+    private android.view.View bar;
     /** The clock button becomes pause / play while a replay runs, and "…" while the frames download. */
     private final Runnable timeButton = new Runnable() {
         @Override public void run() { syncTimeButton(); ui.postDelayed(this, 250); }
     };
     private void syncTimeButton() {
+        if (bar != null && gl.replayProgress() >= 0 && bar.getVisibility() != android.view.View.VISIBLE) {
+            bar.setVisibility(android.view.View.VISIBLE); bar.invalidate();
+        }
         String g = gl.isFetching() ? WAIT : !gl.isReplaying() ? CLOCK : gl.isPaused() ? PLAY : PAUSE;
         if (!g.contentEquals(time.getText())) {
             time.setText(g);
@@ -134,11 +138,30 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
         row.addView(time);
         FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(-1, dp(150), Gravity.BOTTOM);
         root.addView(row, bl);
+        // replay progress: a thin line above the buttons, only while a replay you started plays
+        final android.graphics.Paint track = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        track.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+        track.setStrokeWidth(dp(3));
+        bar = new android.view.View(this) {
+            @Override protected void onDraw(android.graphics.Canvas c) {
+                float p = gl.replayProgress();
+                if (p < 0) { setVisibility(GONE); return; }
+                float y = getHeight() / 2f, x0 = dp(40), x1 = getWidth() - dp(40);
+                track.setColor(0x40FFFFFF); c.drawLine(x0, y, x1, y, track);
+                track.setColor(0xE6FFFFFF); c.drawLine(x0, y, x0 + (x1 - x0) * p, y, track);
+                postInvalidateOnAnimation();
+            }
+        };
+        bar.setVisibility(android.view.View.GONE);
+        FrameLayout.LayoutParams pl = new FrameLayout.LayoutParams(-1, dp(12), Gravity.BOTTOM);
+        root.addView(bar, pl);
 
         root.setOnApplyWindowInsetsListener((v, in) -> {
             Insets s = in.getInsets(WindowInsets.Type.systemBars());
             bl.bottomMargin = s.bottom + dp(18);
             row.setLayoutParams(bl);
+            pl.bottomMargin = s.bottom + dp(18) + dp(150) + dp(6);
+            bar.setLayoutParams(pl);
             return WindowInsets.CONSUMED;
         });
         setContentView(root);
