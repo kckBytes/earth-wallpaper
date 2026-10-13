@@ -48,7 +48,8 @@ public class SettingsActivity extends Activity {
     static final String SETUP_TILE = "setup_tile", SETUP_CONTROL = "setup_control", SETUP_HIDDEN = "setup_hidden";
     private LinearLayout cityList;
     private final ExecutorService net = Executors.newSingleThreadExecutor();
-    private static final int REQ_LOCATION = 7;
+    private static final int REQ_LOCATION = 7, REQ_FOLLOW = 8, REQ_FOLLOW_BG = 9;
+    private Switch follow;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -118,6 +119,15 @@ public class SettingsActivity extends Activity {
         row.addView(add, new LinearLayout.LayoutParams(0, -2, 1f));
         row.addView(mine, new LinearLayout.LayoutParams(0, -2, 1f));
         col.addView(row, lp(dp(4)));
+        follow = new Switch(this);
+        follow.setText("Follow me when I travel");
+        follow.setChecked(p.getBoolean(Prefs.FOLLOW, false) && Locate.background(this));
+        follow.setOnCheckedChangeListener((v, on) -> { if (on) startFollow(); else p.edit().putBoolean(Prefs.FOLLOW, false).apply(); });
+        col.addView(follow, lp(dp(10)));
+        TextView followHint = text("Home moves with you: when you're 30+ km away, the lock screen centres on where you are, "
+                + "no app open. It only reads the location your phone already has, at most every 30 min, so no extra battery.", 12, false);
+        followHint.setAlpha(0.6f);
+        col.addView(followHint, lp(dp(2)));
         Button control = new Button(this);
         control.setText("Open control mode");
         control.setOnClickListener(v -> startActivity(new Intent(this, ExploreActivity.class)));
@@ -267,7 +277,9 @@ public class SettingsActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        city.setText("Lock screen centres on: " + Prefs.home(p).name);
+        city.setText("Lock screen centres on: " + Prefs.home(p).name
+                + (p.getBoolean(Prefs.FOLLOW, false) && Locate.background(this) ? "  (follows you)" : ""));
+        if (follow != null && follow.isChecked() && !Locate.background(this)) follow.setChecked(false);
         showUpdate();
         buildSetup();
         if (Updater.enabled(this)) { Updater.check(this, true); update.postDelayed(this::showUpdate, 4000); }
@@ -313,7 +325,9 @@ public class SettingsActivity extends Activity {
 
     private void addCityToList(Prefs.City c) {
         List<Prefs.City> list = Prefs.presets(p);
-        list.add(c);
+        boolean dup = false;
+        for (Prefs.City x : list) if (Math.abs(x.lat - c.lat) < 0.05 && Math.abs(x.lon - c.lon) < 0.05) dup = true;
+        if (!dup) list.add(c);
         Prefs.savePresets(p, list);
         if (homeFromNextAdd) {                                    // from the setup checklist: this is home
             homeFromNextAdd = false;
@@ -333,7 +347,7 @@ public class SettingsActivity extends Activity {
             Prefs.PARALLAX_GAIN, Prefs.MARKER, Prefs.STORMS, Prefs.STREAKS, Prefs.S_DAY_W, Prefs.S_NIGHT_W, Prefs.S_OUT_W,
             Prefs.S_OUT_A, Prefs.S_DARK, Prefs.TWIST, Prefs.FLIP, Prefs.KNOCK, Prefs.STARS, Prefs.HD_WIFI_ONLY,
             Prefs.LIVE_CLOUDS, Prefs.CLOUDS_SRC, Prefs.VIEW, Prefs.WX, Prefs.WX_AMT, Prefs.WX_STYLE, Prefs.BORDERS,
-            Prefs.MASK, Prefs.REPLAY_H};
+            Prefs.MASK, Prefs.REPLAY_H, Prefs.FOLLOW};
 
     private void confirmReset() {
         android.widget.CheckBox cities = new android.widget.CheckBox(this);
@@ -515,33 +529,83 @@ public class SettingsActivity extends Activity {
                 }).setNegativeButton("Cancel", null).show();
     }
 
+    /** "Use my location": permission, then Location switched on, then a fix (12 s max, else the newest one the phone has). */
     private void myLocation() {
-        if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        if (!Locate.permitted(this)) {
             requestPermissions(new String[]{android.Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOCATION);
             return;
         }
-        LocationManager lm = getSystemService(LocationManager.class);
-        String provider = lm.hasProvider(LocationManager.FUSED_PROVIDER) ? LocationManager.FUSED_PROVIDER
-                : LocationManager.NETWORK_PROVIDER;
-        try {
-            lm.getCurrentLocation(provider, null, getMainExecutor(), loc -> {
-                if (loc == null) { toast("Location unavailable right now"); return; }
-                net.execute(() -> {
-                    String name = "My location";
-                    try {
-                        List<Address> r = new Geocoder(this, Locale.getDefault()).getFromLocation(loc.getLatitude(), loc.getLongitude(), 1);
-                        if (r != null && !r.isEmpty() && r.get(0).getLocality() != null) name = r.get(0).getLocality();
-                    } catch (Exception ignored) { }
-                    Prefs.City c = new Prefs.City(name, loc.getLatitude(), loc.getLongitude());
-                    runOnUiThread(() -> addCityToList(c));
-                });
-            });
-        } catch (SecurityException e) { toast("Location permission needed"); }
+        if (!Locate.switchedOn(this)) { locationOff(); return; }
+        Toast.makeText(this, "Finding you\u2026", Toast.LENGTH_SHORT).show();
+        Locate.find(this, (c, problem) -> {
+            if (isFinishing() || isDestroyed()) return;
+            if (c == null) { homeFromNextAdd = false; Toast.makeText(this, problem, Toast.LENGTH_LONG).show(); return; }
+            if (homeFromNextAdd) { addCityToList(c); return; }                // setup checklist: straight to home
+            new AlertDialog.Builder(this).setTitle("You're in " + c.name)
+                    .setMessage(String.format(Locale.US, "%.2f\u00B0, %.2f\u00B0", c.lat, c.lon))
+                    .setPositiveButton("Make it home", (d, w) -> { homeFromNextAdd = true; addCityToList(c); })
+                    .setNeutralButton("Just add to list", (d, w) -> addCityToList(c))
+                    .setNegativeButton("Cancel", null).show();
+        });
+    }
+
+    private void locationOff() {
+        homeFromNextAdd = false;
+        new AlertDialog.Builder(this).setTitle("Location is off")
+                .setMessage("Turn on Location for the phone, then tap Use my location again.")
+                .setPositiveButton("Open Location settings", (d, w) -> {
+                    try { startActivity(new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)); } catch (Exception ignored) { }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    /** Android only asks twice; after that the switch lives in the app's settings page. */
+    private void permissionBlocked(String what) {
+        new AlertDialog.Builder(this).setTitle("Location permission needed")
+                .setMessage("Android won't ask again. In the next screen tap Permissions \u2192 Location \u2192 " + what + ".")
+                .setPositiveButton("Open app settings", (d, w) -> startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.parse("package:" + getPackageName()))))
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    /** "Follow me": approximate location first, then "Allow all the time" (Android shows that one as a settings page). */
+    private void startFollow() {
+        if (!Locate.permitted(this)) {
+            requestPermissions(new String[]{android.Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_FOLLOW);
+            return;
+        }
+        if (!Locate.background(this)) {
+            new AlertDialog.Builder(this).setTitle("One more step")
+                    .setMessage("So it works without the app open, Android needs location set to \u201CAllow all the time\u201D. "
+                            + "Pick that on the next screen, then come back.")
+                    .setPositiveButton("Continue", (d, w) -> requestPermissions(
+                            new String[]{android.Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_FOLLOW_BG))
+                    .setNegativeButton("Cancel", (d, w) -> follow.setChecked(false))
+                    .setOnCancelListener(d -> follow.setChecked(false))
+                    .show();
+            return;
+        }
+        p.edit().putBoolean(Prefs.FOLLOW, true).apply();
+        getSharedPreferences("follow", MODE_PRIVATE).edit().remove("checked").apply();   // check on the next wake
+        if (!Locate.switchedOn(this)) Toast.makeText(this, "Following is on. Turn on Location so it can work.", Toast.LENGTH_LONG).show();
+        else Toast.makeText(this, "Following is on", Toast.LENGTH_SHORT).show();
     }
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
+        boolean ok = res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED;
         if (req == 41) buildSetup();
-        if (req == REQ_LOCATION && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) myLocation();
+        if (req == REQ_LOCATION) {
+            if (ok) myLocation();
+            else if (!shouldShowRequestPermissionRationale(android.Manifest.permission.ACCESS_COARSE_LOCATION)) permissionBlocked("Allow only while using the app");
+            else homeFromNextAdd = false;
+        }
+        if (req == REQ_FOLLOW) {
+            if (ok) startFollow();
+            else { follow.setChecked(false); if (!shouldShowRequestPermissionRationale(android.Manifest.permission.ACCESS_COARSE_LOCATION)) permissionBlocked("Allow all the time"); }
+        }
+        if (req == REQ_FOLLOW_BG) {
+            if (Locate.background(this)) startFollow();
+            else { follow.setChecked(false); Toast.makeText(this, "Needs \u201CAllow all the time\u201D to follow you", Toast.LENGTH_LONG).show(); }
+        }
     }
 
     private void openPicker() {

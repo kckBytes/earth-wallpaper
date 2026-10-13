@@ -172,6 +172,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             wakePrep = null;
             if (wp != null && replay == null && wp.kind.equals(dataKind)) {
                 replay = new ReplayPlayer(wp.ts, wp.kind, WAKE_S, stepWeights(wp.ts), wp);
+                replayLabelled = false; paused = false;
                 tailNs = 0; lapseNs = 0;
                 Log.i(TAG, "wake replay: " + wp.ts.size() + " frames");
             } else lapseNs = wakeNs;
@@ -212,21 +213,76 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     /** Back triple-tap: replay the real past hours if the frames are on the phone, else the estimated time-lapse. */
     void playTimelapse() {
         h.post(() -> {
-            if (replay != null) return;
+            if (replay != null || fetching) return;
             int hours = cfg.replayH;
-            java.util.List<Long> ts = dataKind.equals("sst") ? new java.util.ArrayList<>() : ReplayStore.available(ctx, dataKind, hours);
-            if (ts.size() >= 2) {
-                tailNs = 0;
-                replay = new ReplayPlayer(ts, dataKind, 2.2 + hours * 0.33, stepWeights(ts), null);
-                android.util.Log.i("EarthWall", "replay start: " + ts.size() + " frames, " + hours + " h");
-                if (glOk) r.setLabel(makeLabel("Last " + hours + " h"));
-                labelStartNs = System.nanoTime();
-            } else {
+            final String kind = dataKind;
+            java.util.List<Long> ts = kind.equals("sst") ? new java.util.ArrayList<>() : ReplayStore.available(ctx, kind, hours);
+            // fewer than ~3/4 of the half-hour frames on the phone (new install, the wallpaper hasn't run long,
+            // mobile data only topped up the newest two): fetch them now, then play the real thing
+            if (!kind.equals("sst") && ts.size() < Math.max(2, hours * 2 * 3 / 4)) {
+                fetching = true;
+                Log.i(TAG, "replay: only " + ts.size() + " frames for " + hours + " h, fetching");
+                showLabel("Getting the real frames\u2026", true);
+                new Thread(() -> {
+                    try { ReplayStore.sync(ctx, Prefs.get(ctx), false); }
+                    catch (Exception e) { Log.w(TAG, "replay fetch failed: " + e); }
+                    h.post(() -> {
+                        fetching = false;
+                        java.util.List<Long> got = dataKind.equals(kind) ? ReplayStore.available(ctx, kind, hours) : new java.util.ArrayList<>();
+                        if (got.size() >= 2) startReplay(got, hours);
+                        else { showLabel("No connection \u2014 estimated motion", false); lapseNs = System.nanoTime(); kick(); }
+                    });
+                }, "earth-replay-fetch").start();
+                return;
+            }
+            if (ts.size() >= 2) startReplay(ts, hours);
+            else {
                 lapseNs = System.nanoTime();
-                android.util.Log.i("EarthWall", "time-lapse start (no replay frames yet)");
+                Log.i(TAG, "time-lapse start (no replay frames for this view)");
             }
             kick();
         });
+    }
+
+    private boolean fetching;
+    private volatile boolean paused;
+    private int labelIdx = -2;
+
+    private void startReplay(java.util.List<Long> ts, int hours) {
+        tailNs = 0; lapseNs = 0; paused = false; labelIdx = -2; replayLabelled = true;
+        replay = new ReplayPlayer(ts, dataKind, 2.2 + hours * 0.33, stepWeights(ts), null);
+        Log.i(TAG, "replay start: " + ts.size() + " frames, " + hours + " h");
+        replayHours = hours;
+        kick();
+    }
+    private int replayHours;
+    private boolean replayLabelled;                 // the wake spin-in replay stays unlabelled, as before
+
+    /** Control mode's pause button: freeze the replay on the moment shown (and again to carry on). */
+    void togglePause() { h.post(() -> { if (replay != null) { paused = !paused; labelIdx = -2; kick(); } }); }
+    boolean isReplaying() { return replay != null; }
+    boolean isFetching() { return fetching; }
+    boolean isPaused() { return paused && replay != null; }
+
+    /** A label that stays up (hold = true) until replaced, or fades after ~3 s. */
+    private void showLabel(String text, boolean hold) {
+        if (glOk) r.setLabel(makeLabel(text));
+        labelStartNs = System.nanoTime() - (hold ? 400_000_000L : 0);
+        labelHold = hold;
+    }
+    private boolean labelHold;
+
+    /** While replaying: "3:30 PM · 9 h ago", refreshed as each half-hour frame comes up. */
+    private void replayLabel(long now) {
+        if (replay == null || replay.a < 0 || !replayLabelled) return;
+        int idx = replay.a + (replay.mix() >= 0.5f ? 1 : 0);
+        if (idx == labelIdx) { if (paused) labelStartNs = now - 400_000_000L; return; }
+        labelIdx = idx;
+        long t = replay.t[Math.min(idx, replay.t.length - 1)];
+        long agoMin = Math.max(0, (replay.t[replay.t.length - 1] - t) / 60_000L);
+        String when = android.text.format.DateFormat.getTimeFormat(ctx).format(new java.util.Date(t));
+        String ago = agoMin < 30 ? "latest" : agoMin < 90 ? "1 h ago" : Math.round(agoMin / 60.0) + " h ago";
+        showLabel((paused ? "\u23F8  " : "") + when + "  \u00B7  " + ago, true);
     }
 
     // ---- real replay: stream the stored frames through the two replay textures
@@ -333,6 +389,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 prepRow += rows;
             }
             double dt = Math.min((now - lastNs) / 1e9, 0.05); lastNs = now;
+            if (paused) return true;                                      // frozen on this moment
             pos += dt / stepS[Math.max(0, Math.min(stepS.length - 1, (int) pos))];
             if (pos >= t.length - 1) return false;
             if (pos >= a + 1) {                                           // step to the next pair
@@ -357,7 +414,10 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private void stepReplay(long now) {
         if (replay == null) { fr.replay = false; return; }
         boolean go = replay.step(now);
+        if (go) replayLabel(now);
         if (!go) {
+            paused = false;
+            if (labelHold) { labelHold = false; labelStartNs = now - 400_000_000L; }   // let the time label fade
             boolean played = replay.a >= 0;
             Log.i(TAG, String.format(java.util.Locale.US, "replay done: %d frames in %.1f s, waited for a frame %d times",
                     replay.t.length, (now - replay.startNs) / 1e9, replay.holds));
@@ -583,7 +643,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             tweenTo(lockLat(next), next.lon, zoomed ? LOCK_ZOOM : 1, (long) (1100 + 900 * Math.min(1.0, ang / 120.0)), EASE_IN_OUT_CUBIC);
             twArc = Math.min(1.0, ang / 70.0);
             if (glOk) r.setLabel(makeLabel(next.name));
-            labelStartNs = System.nanoTime();
+            labelStartNs = System.nanoTime(); labelHold = false;
             kick();
         });
     }
@@ -597,7 +657,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             if (zoomed) {
                 markerCity = c;
                 if (glOk) r.setLabel(makeLabel(c.name));
-                labelStartNs = System.nanoTime();
+                labelStartNs = System.nanoTime(); labelHold = false;
             }
             kick();
         });
@@ -621,10 +681,10 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     }
 
     private float labelAlpha(long now) {
-        if (labelStartNs == 0) return 0f;
+        if (labelStartNs == 0) { labelHold = false; return 0f; }
         float t = (now - labelStartNs) / 1e9f;
         if (t < 0.4f) return t / 0.4f;
-        if (t < 3.2f) return 1f;
+        if (t < 3.2f || labelHold) return 1f;
         if (t < 4.0f) return 1f - (t - 3.2f) / 0.8f;
         labelStartNs = 0;
         return 0f;
@@ -824,8 +884,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         float cloudMix = cloudFadeNs == 0 ? 1f : Math.min(1f, (frameNs - cloudFadeNs) / 3.0e9f);
         lapseOffsetMs(frameNs);                                         // ends the time-lapse when due
         stepReplay(frameNs);
-        boolean animating = replay != null || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || wake < 1f || readyFade < 1f || cloudMix < 1f
-                || labelStartNs != 0
+        boolean animating = (replay != null && !paused) || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || wake < 1f || readyFade < 1f || cloudMix < 1f
+                || (labelStartNs != 0 && !labelHold)
                 || Math.abs(zoomOut - zoomOutTarget) > 1e-3f || Math.abs(home - homeTarget) > 1e-3f;
         // Hand tremor alone moves the parallax by far less than a pixel: ignore it (deadband).
         boolean tilting = Math.abs(parX - gx) > 1.2e-3f || Math.abs(parY - gy) > 1.2e-3f;

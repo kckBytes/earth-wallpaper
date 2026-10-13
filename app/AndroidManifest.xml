@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- "Follow me when I travel" (opt-in): the wallpaper reads the phone's cached location when it comes on screen -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <!-- normal permission, auto-granted: knock detection samples the accelerometer above 200 Hz -->
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <!-- tap-to-update for copies shared as a file (golden app only): the "update ready" note and the installer -->
