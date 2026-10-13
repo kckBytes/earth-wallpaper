@@ -4,7 +4,17 @@ A real-time Earth on the Pixel lock screen: actual sun position, city lights on 
 
 ![Lock screen](docs/lockscreen.png)
 
-**For iPhone and everyone else:** the web version (same globe, same live clouds, control-mode style buttons) is at **https://kckbytes.github.io/earth-web/**. Its source is the public repo [kckBytes/earth-web](https://github.com/kckBytes/earth-web). On iPhone: Safari → Share → Add to Home Screen.
+## Get it
+
+**Android: [download Earth.apk](https://raw.githubusercontent.com/kckBytes/earth-live/dist/Earth.apk)** (always the newest version)
+1. Open that link on your phone; the file downloads.
+2. Tap it. The first time, Android asks to allow your browser to install apps: allow it.
+3. Open **Earth** → **Set as wallpaper** → choose the lock screen.
+
+New versions show up as a red **Update** button at the top of the app. Tap it and confirm; that's all.
+
+**iPhone (and any computer): [open the web version](https://kckbytes.github.io/earth-web/)**
+On iPhone: open it in Safari → Share → **Add to Home Screen**. iPhones don't let apps set live wallpapers, so this runs as its own full-screen app. Source: [kckBytes/earth-web](https://github.com/kckBytes/earth-web).
 
 ## What it does
 
