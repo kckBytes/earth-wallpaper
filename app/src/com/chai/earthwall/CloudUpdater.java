@@ -162,6 +162,7 @@ final class CloudUpdater {
         boolean have = ("live:" + kind).equals(p.getString(Prefs.CLOUDS_SRC, "")) && cur(c).length() > 10_000
                 && res.equals(p.getString(Prefs.CLOUDS_RES, ""));
         syncStorms(c, p, now);
+        Requests.afterSync(c);                                   // launch notes; tracked launches whose orbit came out
         syncSky(c, p, now, metered);
         try { WxStore.sync(c, p, metered); } catch (Exception e) { Log.w(TAG, "weather sync failed: " + e.getMessage()); }
         if (!force && have && obs <= p.getLong(Prefs.CLOUDS_TIME, 0)) {
