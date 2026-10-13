@@ -250,7 +250,8 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
 
     private void startReplay(java.util.List<Long> ts, int hours) {
         tailNs = 0; lapseNs = 0; paused = false; labelIdx = -2; replayLabelled = true;
-        replay = new ReplayPlayer(ts, dataKind, 2.2 + hours * 0.33, stepWeights(ts), null);
+        // about a second per hour (12 h = 12 s), slow enough to follow the clouds; ⏸ to stop on a moment
+        replay = new ReplayPlayer(ts, dataKind, Math.max(8.0, hours * 1.0), stepWeights(ts), null);
         Log.i(TAG, "replay start: " + ts.size() + " frames, " + hours + " h");
         replayHours = hours;
         kick();
@@ -262,6 +263,12 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     void togglePause() { h.post(() -> { if (replay != null) { paused = !paused; labelIdx = -2; kick(); } }); }
     boolean isReplaying() { return replay != null; }
     boolean isFetching() { return fetching; }
+    /** 0..1 through the replay you started, or -1. */
+    float replayProgress() {
+        ReplayPlayer rp = replay;
+        if (rp == null || !replayLabelled || rp.t.length < 2) return -1f;
+        return (float) Math.max(0, Math.min(1, rp.pos / (rp.t.length - 1)));
+    }
     boolean isPaused() { return paused && replay != null; }
 
     /** A label that stays up (hold = true) until replaced, or fades after ~3 s. */
@@ -503,7 +510,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         }
         fr.wxMix = (float) mix;
         boolean overlay = cfg.wx >= 10 && wxView == cfg.wx;
-        fr.wxAmt = overlay ? Math.max(0f, Math.min(1f, cfg.wxAmt)) : 0f;
+        fr.wxAmt = overlay ? Math.max(0f, Math.min(1f, cfg.wxAmt)) * (1f - 0.5f * replayDim) : 0f;   // replay: the clouds come first
         fr.wxStyle = cfg.wxStyle;
         fr.wxChan = WxStore.channel(wxView);
         fr.wxPal = wxPalette(wxView);
@@ -514,7 +521,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         windMix = mix;
         streaks.step(dtS, this::windAt, camLat, camLon);
         fr.streaks = streaks.verts;
-        fr.streakAlpha = (0.38f + 0.17f * fr.wxAmt) * fr.fade;   // a little softer over the real Earth
+        fr.streakAlpha = (0.38f + 0.17f * fr.wxAmt) * fr.fade * (1f - 0.5f * replayDim);   // a little softer over the real Earth
         fr.sDayW = cfg.sDayW; fr.sNightW = cfg.sNightW; fr.sOutW = cfg.sOutW; fr.sOutA = cfg.sOutA; fr.sDark = cfg.sDark;
     }
 
@@ -559,6 +566,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private volatile boolean warp;
     private double warpOffsetMs;
     private double sunBackMs;                       // how far back the sun is shown (replays), eased to 0 after
+    private float replayDim;                        // 0..1 while a replay you started plays: weather layer steps back
     void setTimeWarp(boolean on) { warp = on; h.post(this::kick); }
 
     /** Control mode: zoom in/out one step around the current centre. */
@@ -886,11 +894,13 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             double target = System.currentTimeMillis() - (replay.a >= 0 ? replay.timeMs() : replay.t[0]);
             sunBackMs = replay.a >= 0 ? target : sunBackMs + (target - sunBackMs) * (1 - Math.exp(-8.0 * dt));
         } else if (sunBackMs > 0) sunBackMs = sunBackMs < 60_000 ? 0 : sunBackMs * Math.exp(-3.0 * dt);
+        float dimTo = replay != null && replayLabelled ? 1f : 0f;
+        replayDim = Math.abs(replayDim - dimTo) < 0.01f ? dimTo : approach(replayDim, dimTo, 4f, dt);
         float wake = Math.min(1f, (frameNs - wakeNs) / 1.0e9f);
         float cloudMix = cloudFadeNs == 0 ? 1f : Math.min(1f, (frameNs - cloudFadeNs) / 3.0e9f);
         lapseOffsetMs(frameNs);                                         // ends the time-lapse when due
         stepReplay(frameNs);
-        boolean animating = (replay != null && !paused) || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || (sunBackMs > 0 && replay == null) || wake < 1f || readyFade < 1f || cloudMix < 1f
+        boolean animating = (replay != null && !paused) || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || (sunBackMs > 0 && replay == null) || (replayDim > 0f && replay == null) || wake < 1f || readyFade < 1f || cloudMix < 1f
                 || (labelStartNs != 0 && !labelHold)
                 || Math.abs(zoomOut - zoomOutTarget) > 1e-3f || Math.abs(home - homeTarget) > 1e-3f;
         // Hand tremor alone moves the parallax by far less than a pixel: ignore it (deadband).
@@ -1317,6 +1327,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         return true;
     }
 
+    private static final float[] LABEL_SCALES = {1f, 0.66f, 0.45f};
     private void projectStorms(long T, float dist, float cx, float cy, float radius) {
         fr.stormN = 0;
         if (!cfg.storms || storms.isEmpty()) return;
@@ -1338,12 +1349,19 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
             if (facing <= 1.0) continue;
             double dz = dist - vz;
             float x = (float) (cx + vx / dz / tanA * radius), y = (float) (cy + vy / dz / tanA * radius);
-            // screen box of this label (GL px, y up); skip it if it would overlap one already placed
-            float l = x - s.ax - margin, rr = x - s.ax + s.w + margin, top = y + s.ay + margin, bot = y + s.ay - s.h - margin;
-            boolean hit = false;
-            for (int k = 0; k < np && !hit; k++)
-                hit = l < placed[4 * k + 1] && rr > placed[4 * k] && bot < placed[4 * k + 2] && top > placed[4 * k + 3];
-            if (hit) continue;
+            // screen box of this label (GL px, y up). Nothing is ever hidden for lack of room: a label that would
+            // overlap one already placed is tried smaller, and the smallest size is drawn regardless (zoom in to read it)
+            float k = 1f, l = 0, rr = 0, top = 0, bot = 0;
+            for (float tryK : LABEL_SCALES) {
+                k = tryK;
+                float mg = margin * k;
+                l = x - s.ax * k - mg; rr = x + (s.w - s.ax) * k + mg; top = y + s.ay * k + mg; bot = y + (s.ay - s.h) * k - mg;
+                boolean hit = false;
+                for (int q = 0; q < np && !hit; q++)
+                    hit = l < placed[4 * q + 1] && rr > placed[4 * q] && bot < placed[4 * q + 2] && top > placed[4 * q + 3];
+                if (!hit) break;
+            }
+            fr.stormScale[i] = k;
             float edge = (float) Math.min(1.0, (facing - 1.0) / 0.9);       // fades well before the limb
             float life = (float) Math.min(1.0, Math.min((T - s.from) / fadeMs, (s.until - T) / fadeMs));
             float amt = Math.max(0f, edge * life * 0.85f * fr.fade);
