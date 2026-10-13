@@ -36,16 +36,24 @@ final class ReplayStore {
     private static String suffix(String kind) { return kind.equals("bt") ? "_bt.jpg" : "_c.jpg"; }
 
     static void sync(Context c, SharedPreferences p, boolean metered) throws Exception {
+        sync(c, p, metered, p.getInt(Prefs.REPLAY_H, 12));
+    }
+
+    /** Downloads what's missing of the last `hours` (control mode asks for 24); keeps up to 24 h on the phone. */
+    static void sync(Context c, SharedPreferences p, boolean metered, int hours) throws Exception {
         String kind = CloudUpdater.kind(p);
         if (kind.equals("sst")) return;                                   // daily map, nothing to replay
-        int hours = p.getInt(Prefs.REPLAY_H, 12);
         byte[] fj = CloudUpdater.download(CloudUpdater.LIVE_URL + "frames.json?t=" + System.currentTimeMillis(), 20_000);
         JSONObject j = new JSONObject(new String(fj, "UTF-8"));
         write(new File(dir(c), "frames.json"), fj);                     // kept for the per-step activity
         JSONArray arr = j.getJSONArray("frames");
         long[] ts = new long[arr.length()];
         java.util.Map<Long, Long> ver = new java.util.HashMap<>();      // server-side version of each cloud frame
-        for (int i = 0; i < ts.length; i++) { JSONObject o = arr.getJSONObject(i); ts[i] = o.getLong("t"); ver.put(ts[i], o.optLong("v", 0)); }
+        java.util.Map<Long, Long> dver = new java.util.HashMap<>();     // ... and of its fine motion to the next one
+        for (int i = 0; i < ts.length; i++) {
+            JSONObject o = arr.getJSONObject(i); ts[i] = o.getLong("t"); ver.put(ts[i], o.optLong("v", 0));
+            if (o.has("d")) dver.put(ts[i], o.optLong("d", 0));
+        }
         Arrays.sort(ts);
         if (ts.length == 0) return;
         long newest = ts[ts.length - 1];
@@ -69,6 +77,13 @@ final class ReplayStore {
                 byte[] b = CloudUpdater.download(CloudUpdater.LIVE_URL + "frames/" + t + "_f.png", 20_000);
                 write(fl, b);
             }
+            // fine motion to the next picture (in-between frames of the replay), ~60 KB
+            File dn = new File(d, t + "_d.png");
+            Long dv = dver.get(t);
+            if (dv != null && (!dn.exists() || dn.length() < 50 || dn.lastModified() < dv)) {
+                try { write(dn, CloudUpdater.download(CloudUpdater.LIVE_URL + "frames/" + t + "_d.png", 30_000)); kb += 60; }
+                catch (Exception e) { Log.i(TAG, "replay: no fine motion for " + t + ": " + e.getMessage()); }
+            }
         }
         // the newest frame's motion changes as the next frame arrives: refresh it every time
         try { write(new File(d, newest + "_f.png"), CloudUpdater.download(CloudUpdater.LIVE_URL + "frames/" + newest + "_f.png", 20_000)); }
@@ -84,8 +99,8 @@ final class ReplayStore {
             try {
                 long t = Long.parseLong(f.getName().substring(0, f.getName().indexOf('_')));
                 if (!listed.contains(t)) { if (f.delete()) stale++; continue; }
-                boolean other = !f.getName().endsWith("_f.png") && !f.getName().endsWith(suffix(kind));
-                if (t < newest - 24 * H - 60_000 || (!other && t < newest - hours * H - 60_000)) f.delete();
+                boolean other = !f.getName().endsWith("_f.png") && !f.getName().endsWith("_d.png") && !f.getName().endsWith(suffix(kind));
+                if (t < newest - 24 * H - 60_000) f.delete();              // a full day stays for control mode's replay
             } catch (Exception e) { f.delete(); }
         }
         if (stale > 0) Log.i(TAG, "replay: removed " + stale + " files of frames the server no longer lists");
@@ -142,7 +157,25 @@ final class ReplayStore {
         return Images.decodeSingle(new FileInputStream(new File(dir(c), t + suffix(kind))));
     }
 
+    static final int DW = 512, DH = 256;          // fine motion grid (server: flow.dense)
+
+    /** Motion from frame t to the next: the fine 512 x 256 field when the server made one, else the 64 x 32 blocks. */
     static ByteBuffer loadFlow(Context c, long t) {
+        File dn = new File(dir(c), t + "_d.png");
+        if (dn.exists()) {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inScaled = false;
+            Bitmap b = BitmapFactory.decodeFile(dn.getPath(), o);
+            if (b != null && b.getWidth() == DW && b.getHeight() == DH) {
+                ByteBuffer out = ByteBuffer.allocateDirect(DW * DH * 2).order(ByteOrder.nativeOrder());
+                int[] px = new int[DW * DH];
+                b.getPixels(px, 0, DW, 0, 0, DW, DH);
+                b.recycle();
+                for (int v : px) { out.put((byte) ((v >> 16) & 0xFF)); out.put((byte) ((v >> 8) & 0xFF)); }
+                out.position(0);
+                return out;
+            }
+        }
         int gw = FlowEstimator.GW, gh = FlowEstimator.GH;
         ByteBuffer out = ByteBuffer.allocateDirect(gw * gh * 2).order(ByteOrder.nativeOrder());
         Bitmap b = BitmapFactory.decodeFile(new File(dir(c), t + "_f.png").getPath());

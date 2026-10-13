@@ -48,7 +48,11 @@ public class SettingsActivity extends Activity {
     static final String SETUP_TILE = "setup_tile", SETUP_CONTROL = "setup_control", SETUP_HIDDEN = "setup_hidden";
     private LinearLayout cityList;
     private final ExecutorService net = Executors.newSingleThreadExecutor();
-    private static final int REQ_LOCATION = 7;
+    private static final int REQ_LOCATION = 7, REQ_FOLLOW = 8, REQ_FOLLOW_BG = 9;
+    private Switch follow;
+    private boolean followPending;
+    private LinearLayout reqList;
+    private android.view.View requestsAnchor;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -65,6 +69,8 @@ public class SettingsActivity extends Activity {
             return WindowInsets.CONSUMED;
         });
         setContentView(scroll);
+        if (getIntent().getBooleanExtra("requests", false))                // from a launch notification
+            scroll.post(() -> { if (requestsAnchor != null) scroll.smoothScrollTo(0, requestsAnchor.getTop()); });
 
         TextView title = text("Earth", 30, true);
         col.addView(title);
@@ -118,6 +124,18 @@ public class SettingsActivity extends Activity {
         row.addView(add, new LinearLayout.LayoutParams(0, -2, 1f));
         row.addView(mine, new LinearLayout.LayoutParams(0, -2, 1f));
         col.addView(row, lp(dp(4)));
+        follow = new Switch(this);
+        follow.setText("Follow me when I travel");
+        follow.setChecked(p.getBoolean(Prefs.FOLLOW, false) && Locate.background(this));
+        follow.setOnCheckedChangeListener((v, on) -> {
+            if (!on) { p.edit().putBoolean(Prefs.FOLLOW, false).apply(); buildSetup(); }
+            else if (!followOn(this)) startFollow();
+        });
+        col.addView(follow, lp(dp(10)));
+        TextView followHint = text("Home moves with you: when you're 30+ km away, the lock screen centres on where you are, "
+                + "no app open. It only reads the location your phone already has, at most every 30 min, so no extra battery.", 12, false);
+        followHint.setAlpha(0.6f);
+        col.addView(followHint, lp(dp(2)));
         Button control = new Button(this);
         control.setText("Open control mode");
         control.setOnClickListener(v -> startActivity(new Intent(this, ExploreActivity.class)));
@@ -234,6 +252,7 @@ public class SettingsActivity extends Activity {
 
         header("Replay (back triple-tap)");
         steps("Replay the last", Prefs.REPLAY_H, Prefs.REPLAY_CHOICES, 12, " h");
+        toggle("Smooth replay: in-between frames along the measured cloud motion (off = only the real pictures)", Prefs.REPLAY_SMOOTH, true);
         TextView rHint = text("Plays the real satellite record of the past hours: clouds forming, drifting, dissolving. "
                 + "The phone keeps only that many hours of frames (about 0.4 MB per half hour) and fetches the past day on Wi-Fi.", 12, false);
         rHint.setAlpha(0.6f);
@@ -249,6 +268,23 @@ public class SettingsActivity extends Activity {
             Toast.makeText(this, "Fetching the latest cloud map…", Toast.LENGTH_SHORT).show();
         });
         col.addView(refresh, lp(dp(8)));
+
+        header("Requests");
+        requestsAnchor = col.getChildAt(col.getChildCount() - 1);
+        TextView rqHint = text("Extra things you asked to track, on this phone only. After a rocket launches, Earth asks "
+                + "whether to follow what it carried; its orbit is usually published a day or two later and it then appears "
+                + "on the globe in green. \u201CMake permanent\u201D asks (on GitHub) for it to be added for everyone.", 12, false);
+        rqHint.setAlpha(0.6f);
+        col.addView(rqHint, lp(dp(2)));
+        reqList = new LinearLayout(this);
+        reqList.setOrientation(LinearLayout.VERTICAL);
+        col.addView(reqList, lp(dp(4)));
+        Button addReq = new Button(this);
+        addReq.setText("+ Track a recent launch");
+        addReq.setOnClickListener(v -> pickLaunch());
+        col.addView(addReq, lp(dp(6)));
+        toggle("Tell me after a rocket launches", Requests.NOTIFY, true);
+        buildRequests();
 
         header("Reset");
         Button reset = new Button(this);
@@ -267,7 +303,11 @@ public class SettingsActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        city.setText("Lock screen centres on: " + Prefs.home(p).name);
+        city.setText("Lock screen centres on: " + Prefs.home(p).name
+                + (p.getBoolean(Prefs.FOLLOW, false) && Locate.background(this) ? "  (follows you)" : ""));
+        if (reqList != null) buildRequests();
+        if (followPending && Locate.background(this)) { followPending = false; startFollow(); }
+        if (follow != null && follow.isChecked() && !Locate.background(this)) follow.setChecked(false);
         showUpdate();
         buildSetup();
         if (Updater.enabled(this)) { Updater.check(this, true); update.postDelayed(this::showUpdate, 4000); }
@@ -313,7 +353,9 @@ public class SettingsActivity extends Activity {
 
     private void addCityToList(Prefs.City c) {
         List<Prefs.City> list = Prefs.presets(p);
-        list.add(c);
+        boolean dup = false;
+        for (Prefs.City x : list) if (Math.abs(x.lat - c.lat) < 0.05 && Math.abs(x.lon - c.lon) < 0.05) dup = true;
+        if (!dup) list.add(c);
         Prefs.savePresets(p, list);
         if (homeFromNextAdd) {                                    // from the setup checklist: this is home
             homeFromNextAdd = false;
@@ -326,6 +368,101 @@ public class SettingsActivity extends Activity {
         Toast.makeText(this, "Added " + c.name, Toast.LENGTH_SHORT).show();
     }
 
+    // ------------------------------------------------------------------ requests
+    private void buildRequests() {
+        reqList.removeAllViews();
+        List<Requests.Req> l = Requests.list(this);
+        if (l.isEmpty()) {
+            TextView none = text("No requests yet.", 13, false);
+            none.setAlpha(0.6f);
+            reqList.addView(none, lp(dp(6)));
+            return;
+        }
+        java.text.DateFormat df = android.text.format.DateFormat.getMediumDateFormat(this),
+                tf = android.text.format.DateFormat.getTimeFormat(this);
+        for (Requests.Req r : l) {
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
+            box.setCornerRadius(dp(14));
+            box.setStroke(dp(1), r.on ? 0x885CFF86 : 0x55FFFFFF);
+            card.setBackground(box);
+            card.setPadding(dp(14), dp(10), dp(14), dp(6));
+            card.addView(text((r.on ? "\u25CF  " : "\u25CB  ") + r.mission, 15, true));
+            TextView sub = text(r.rocket + " \u00B7 launched " + df.format(new java.util.Date(r.net)) + ", " + tf.format(new java.util.Date(r.net)), 12, false);
+            sub.setAlpha(0.7f);
+            card.addView(sub);
+            TextView st = text(r.result + (r.checked > 0 ? "  \u00B7  checked " + tf.format(new java.util.Date(r.checked)) : ""), 12, false);
+            st.setTextColor(r.on ? 0xFF5CFF86 : 0xFFFFC266);
+            card.addView(st, lp(dp(4)));
+            LinearLayout row = new LinearLayout(this);
+            Button check = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            check.setText("Check now"); check.setAllCaps(false);
+            check.setOnClickListener(v -> {
+                st.setText("Checking\u2026");
+                net.execute(() -> {
+                    String msg;
+                    try {
+                        List<Requests.Req> got = Requests.check(this);
+                        boolean mine = false;
+                        for (Requests.Req g : got) if (g.id.equals(r.id)) mine = true;
+                        Requests.Req now = Requests.find(Requests.list(this), r.id);
+                        msg = now != null && now.on ? (mine ? "It's out \u2014 now on your globe" : "On your globe") : "Still not available";
+                    } catch (Exception e) { msg = "Couldn't check \u2014 no connection?"; }
+                    final String m = msg;
+                    runOnUiThread(() -> { Toast.makeText(this, m, Toast.LENGTH_SHORT).show(); buildRequests(); });
+                });
+            });
+            row.addView(check);
+            Button perm = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            perm.setText(r.permanent ? "Asked \u2713" : "Make permanent"); perm.setAllCaps(false);
+            perm.setOnClickListener(v -> {
+                org.json.JSONObject o = Requests.launched(this).get(r.id);
+                try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(Requests.permanentUrl(r, o)))); }
+                catch (Exception e) { toast("No browser found"); return; }
+                Requests.setPermanentAsked(this, r.id);
+                buildRequests();
+            });
+            row.addView(perm);
+            Button rm = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            rm.setText("Remove"); rm.setAllCaps(false);
+            rm.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("Stop tracking " + r.mission + "?")
+                    .setPositiveButton("Remove", (d, w) -> { Requests.remove(this, r.id); buildRequests(); })
+                    .setNegativeButton("Cancel", null).show());
+            row.addView(rm);
+            card.addView(row);
+            reqList.addView(card, lp(dp(8)));
+        }
+    }
+
+    /** Recent launches from the server's list: pick one to track. */
+    private void pickLaunch() {
+        toast("Getting recent launches\u2026");
+        net.execute(() -> {
+            try { Requests.fetch(this); } catch (Exception e) { /* use the copy we have */ }
+            java.util.Map<String, org.json.JSONObject> m = Requests.launched(this);
+            List<Requests.Req> mine = Requests.list(this);
+            List<org.json.JSONObject> pick = new java.util.ArrayList<>();
+            for (org.json.JSONObject o : m.values()) if (Requests.find(mine, o.optString("id")) == null) pick.add(o);
+            runOnUiThread(() -> {
+                if (pick.isEmpty()) { toast(m.isEmpty() ? "No launch list yet \u2014 try again later" : "You're already tracking every recent launch"); return; }
+                java.text.DateFormat df = android.text.format.DateFormat.getMediumDateFormat(this);
+                String[] lines = new String[pick.size()];
+                for (int i = 0; i < lines.length; i++) {
+                    org.json.JSONObject o = pick.get(i);
+                    lines[i] = o.optString("mission") + "\n" + o.optString("rocket") + " \u00B7 " + df.format(new java.util.Date(o.optLong("net")))
+                            + (o.optBoolean("available") ? " \u00B7 orbit out" : " \u00B7 orbit not out yet");
+                }
+                new AlertDialog.Builder(this).setTitle("Track a recent launch")
+                        .setItems(lines, (d, w) -> {
+                            org.json.JSONObject o = pick.get(w);
+                            Requests.add(this, o.optString("id"), o.optString("rocket"), o.optString("mission"), o.optLong("net"));
+                            buildRequests();
+                        }).setNegativeButton("Cancel", null).show();
+            });
+        });
+    }
+
     // ------------------------------------------------------------------ reset
 
     /** Every look / motion / layer setting this screen changes. Downloaded clouds and app updates are kept. */
@@ -333,7 +470,7 @@ public class SettingsActivity extends Activity {
             Prefs.PARALLAX_GAIN, Prefs.MARKER, Prefs.STORMS, Prefs.STREAKS, Prefs.S_DAY_W, Prefs.S_NIGHT_W, Prefs.S_OUT_W,
             Prefs.S_OUT_A, Prefs.S_DARK, Prefs.TWIST, Prefs.FLIP, Prefs.KNOCK, Prefs.STARS, Prefs.HD_WIFI_ONLY,
             Prefs.LIVE_CLOUDS, Prefs.CLOUDS_SRC, Prefs.VIEW, Prefs.WX, Prefs.WX_AMT, Prefs.WX_STYLE, Prefs.BORDERS,
-            Prefs.MASK, Prefs.REPLAY_H};
+            Prefs.MASK, Prefs.REPLAY_H, Prefs.FOLLOW, Prefs.REPLAY_SMOOTH};
 
     private void confirmReset() {
         android.widget.CheckBox cities = new android.widget.CheckBox(this);
@@ -364,12 +501,17 @@ public class SettingsActivity extends Activity {
     /** {done, total} for the setup checklist; also used by the after-update notification. */
     static int[] setupProgress(Context c) {
         SharedPreferences sp = Prefs.get(c);
-        boolean notify = Updater.enabled(c);
+        boolean notify = true;                                    // alerts: launches you can follow (+ updates)
         boolean[] d = {sp.contains(Prefs.CITY_LAT), wallpaperSet(c), sp.getBoolean(SETUP_TILE, false),
                 !notify || notifyAllowed(c), sp.getBoolean(SETUP_CONTROL, false)};
         int n = 0;
         for (int i = 0; i < d.length; i++) if (d[i] && (notify || i != 3)) n++;
         return new int[]{n, notify ? 5 : 4};
+    }
+
+    /** Location "Allow all the time" granted and following switched on. */
+    static boolean followOn(Context c) {
+        return Prefs.get(c).getBoolean(Prefs.FOLLOW, false) && Locate.background(c);
     }
 
     static boolean notifyAllowed(Context c) {
@@ -393,7 +535,7 @@ public class SettingsActivity extends Activity {
 
     private void buildSetup() {
         setup.removeAllViews();
-        boolean notify = Updater.enabled(this);                   // only the shared app gets update notifications
+        boolean notify = true;                                    // alerts: launches you can follow (+ updates, shared app)
         boolean[] done = {stepHome(), stepWallpaper(), p.getBoolean(SETUP_TILE, false), !notify || stepNotify(), p.getBoolean(SETUP_CONTROL, false)};
         int total = notify ? 5 : 4, n = 0;
         for (int i = 0; i < done.length; i++) if (done[i] && (notify || i != 3)) n++;
@@ -408,7 +550,7 @@ public class SettingsActivity extends Activity {
 
         TextView head = text("Set up Earth  ·  " + n + " of " + total + " done", 17, true);
         setup.addView(head);
-        TextView sub = text("Five quick steps so it works the way it's meant to.", 13, false);
+        TextView sub = text((total == 5 ? "Five" : "Four") + " quick steps so it works the way it's meant to.", 13, false);
         sub.setAlpha(0.7f);
         setup.addView(sub);
 
@@ -419,7 +561,8 @@ public class SettingsActivity extends Activity {
                 "Set", v -> openPicker());
         setupRow(done[2], "Add the Earth tile", "Swipe down on the lock screen, tap Earth: zoom, cities, time-lapse, no unlock",
                 "Add", v -> addTile());
-        if (notify) setupRow(done[3], "Allow update alerts", "So you hear when a new version is out",
+        if (notify) setupRow(done[3], "Allow alerts", Updater.enabled(this)
+                        ? "New versions, and rockets you can follow after they launch" : "Rockets you can follow after they launch",
                 "Allow", v -> requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41));
         setupRow(done[4], "Try control mode", "Buttons for zoom, next city, and hold ◷ to fast-forward the clouds",
                 "Try", v -> { p.edit().putBoolean(SETUP_CONTROL, true).apply(); startActivity(new Intent(this, ExploreActivity.class)); });
@@ -515,33 +658,98 @@ public class SettingsActivity extends Activity {
                 }).setNegativeButton("Cancel", null).show();
     }
 
+    /** "Use my location": permission, then Location switched on, then a fix (12 s max, else the newest one the phone has). */
     private void myLocation() {
-        if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        if (!Locate.permitted(this)) {
             requestPermissions(new String[]{android.Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOCATION);
             return;
         }
-        LocationManager lm = getSystemService(LocationManager.class);
-        String provider = lm.hasProvider(LocationManager.FUSED_PROVIDER) ? LocationManager.FUSED_PROVIDER
-                : LocationManager.NETWORK_PROVIDER;
-        try {
-            lm.getCurrentLocation(provider, null, getMainExecutor(), loc -> {
-                if (loc == null) { toast("Location unavailable right now"); return; }
-                net.execute(() -> {
-                    String name = "My location";
-                    try {
-                        List<Address> r = new Geocoder(this, Locale.getDefault()).getFromLocation(loc.getLatitude(), loc.getLongitude(), 1);
-                        if (r != null && !r.isEmpty() && r.get(0).getLocality() != null) name = r.get(0).getLocality();
-                    } catch (Exception ignored) { }
-                    Prefs.City c = new Prefs.City(name, loc.getLatitude(), loc.getLongitude());
-                    runOnUiThread(() -> addCityToList(c));
-                });
-            });
-        } catch (SecurityException e) { toast("Location permission needed"); }
+        if (!Locate.switchedOn(this)) { locationOff(); return; }
+        Toast.makeText(this, "Finding you\u2026", Toast.LENGTH_SHORT).show();
+        Locate.find(this, (c, problem) -> {
+            if (isFinishing() || isDestroyed()) return;
+            if (c == null) { homeFromNextAdd = false; Toast.makeText(this, problem, Toast.LENGTH_LONG).show(); return; }
+            if (homeFromNextAdd) { addCityToList(c); return; }                // setup checklist: straight to home
+            new AlertDialog.Builder(this).setTitle("You're in " + c.name)
+                    .setMessage(String.format(Locale.US, "%.2f\u00B0, %.2f\u00B0", c.lat, c.lon))
+                    .setPositiveButton("Make it home", (d, w) -> { homeFromNextAdd = true; addCityToList(c); })
+                    .setNeutralButton("Just add to list", (d, w) -> addCityToList(c))
+                    .setNegativeButton("Cancel", null).show();
+        });
+    }
+
+    private void locationOff() {
+        homeFromNextAdd = false;
+        new AlertDialog.Builder(this).setTitle("Location is off")
+                .setMessage("Turn on Location for the phone, then tap Use my location again.")
+                .setPositiveButton("Open Location settings", (d, w) -> {
+                    try { startActivity(new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)); } catch (Exception ignored) { }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    /** Android only asks twice; after that the switch lives in the app's settings page. */
+    private void permissionBlocked(String what) {
+        new AlertDialog.Builder(this).setTitle("Location permission needed")
+                .setMessage("Android won't ask again. In the next screen tap Permissions \u2192 Location \u2192 " + what + ".")
+                .setPositiveButton("Open app settings", (d, w) -> startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.parse("package:" + getPackageName()))))
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    /** "Follow me": approximate location first, then "Allow all the time" (Android shows that one as a settings page). */
+    private void startFollow() {
+        if (!Locate.permitted(this)) {
+            requestPermissions(new String[]{android.Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_FOLLOW);
+            return;
+        }
+        if (!Locate.background(this)) {
+            new AlertDialog.Builder(this).setTitle("One more step")
+                    .setMessage("So it works without the app open, Android needs location set to \u201CAllow all the time\u201D. "
+                            + "Pick that on the next screen, then come back.")
+                    .setPositiveButton("Continue", (d, w) -> requestPermissions(
+                            new String[]{android.Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_FOLLOW_BG))
+                    .setNegativeButton("Not now", (d, w) -> follow.setChecked(false))
+                    .setOnCancelListener(d -> follow.setChecked(false))
+                    .show();
+            return;
+        }
+        p.edit().putBoolean(Prefs.FOLLOW, true).apply();
+        getSharedPreferences("follow", MODE_PRIVATE).edit().remove("checked").apply();   // check on the next wake
+        if (follow != null && !follow.isChecked()) follow.setChecked(true);
+        buildSetup();
+        if (!Locate.switchedOn(this)) Toast.makeText(this, "Following is on. Turn on Location so it can work.", Toast.LENGTH_LONG).show();
+        else Toast.makeText(this, "Following is on", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Anything short of "Allow all the time" (while using, only this time, don't allow): the app's own page, where it's one tap. */
+    private void allTheTimeInSettings() {
+        new AlertDialog.Builder(this).setTitle("Earth needs \u201CAllow all the time\u201D")
+                .setMessage("It only uses the location your phone already has, at most every 30 min, so it costs no battery. "
+                        + "On the next screen: Permissions \u2192 Location \u2192 Allow all the time.")
+                .setPositiveButton("Open settings", (d, w) -> {
+                    followPending = true;
+                    startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.parse("package:" + getPackageName())));
+                })
+                .setNegativeButton("Not now", null).show();
     }
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
+        boolean ok = res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED;
         if (req == 41) buildSetup();
-        if (req == REQ_LOCATION && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) myLocation();
+        if (req == REQ_LOCATION) {
+            if (ok) myLocation();
+            else if (!shouldShowRequestPermissionRationale(android.Manifest.permission.ACCESS_COARSE_LOCATION)) permissionBlocked("Allow only while using the app");
+            else homeFromNextAdd = false;
+        }
+        if (req == REQ_FOLLOW) {
+            if (ok) startFollow();
+            else { follow.setChecked(false); allTheTimeInSettings(); }
+        }
+        if (req == REQ_FOLLOW_BG) {
+            if (Locate.background(this)) startFollow();
+            else { follow.setChecked(false); allTheTimeInSettings(); }
+        }
     }
 
     private void openPicker() {

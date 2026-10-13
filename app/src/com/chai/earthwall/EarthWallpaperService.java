@@ -121,7 +121,7 @@ public class EarthWallpaperService extends WallpaperService {
             gl.setVisible(v, km != null && km.isKeyguardLocked());
             setSensor(v && (parallax || flip || knockZoom));
             main.removeCallbacks(periodicCheck);
-            if (v) periodicCheck.run();
+            if (v) { periodicCheck.run(); Locate.follow(EarthWallpaperService.this); }
         }
 
         /** System UI tells wallpapers when the screen wakes and sleeps (seen on this Pixel). */
