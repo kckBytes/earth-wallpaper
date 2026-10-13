@@ -1208,7 +1208,9 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         stormsCheckNs = frameNs;
         java.io.File f = new java.io.File(ctx.getFilesDir(), "storms.json");
         java.io.File fs = new java.io.File(ctx.getFilesDir(), "sats.json"), fk = new java.io.File(ctx.getFilesDir(), "sky.json");
-        long m = (f.exists() ? f.lastModified() : 0) + (fs.exists() ? fs.lastModified() : 0) + (fk.exists() ? fk.lastModified() : 0);
+        java.io.File fl = Requests.cache(ctx);
+        long m = (f.exists() ? f.lastModified() : 0) + (fs.exists() ? fs.lastModified() : 0) + (fk.exists() ? fk.lastModified() : 0)
+                + (fl.exists() ? fl.lastModified() : 0) + Requests.version(ctx);
         loadSky(fk);
         if (m == stormsMtime) return;
         stormsMtime = m;
@@ -1270,6 +1272,27 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 }
             }
         } catch (Exception e) { Log.w(TAG, "sky labels unreadable", e); }
+        try {                                                            // launches you asked to follow (Settings > Requests)
+            java.util.Map<String, org.json.JSONObject> lm = Requests.launched(ctx);
+            for (Requests.Req rq : Requests.list(ctx)) {
+                org.json.JSONObject o = lm.get(rq.id);
+                if (o == null || !o.optBoolean("available")) continue;
+                org.json.JSONArray tr = o.optJSONArray("track");
+                if (tr == null || tr.length() < 2) continue;
+                Storm s = new Storm();
+                s.type = "sat"; s.name = o.optString("mission", rq.mission);
+                int n = o.optInt("objects", 1);
+                s.kind = o.optString("rocket", rq.rocket) + (n > 1 ? " \u00B7 " + n + " objects" : "");
+                s.detail = o.optInt("alt_km", 0) > 0 ? o.optInt("alt_km") + " km up" : "";
+                s.t = new long[tr.length()]; s.lat = new double[tr.length()]; s.lon = new double[tr.length()];
+                for (int k = 0; k < tr.length(); k++) {
+                    org.json.JSONArray q = tr.getJSONArray(k);
+                    s.t[k] = q.getLong(0); s.lat[k] = q.getDouble(1); s.lon[k] = q.getDouble(2);
+                }
+                s.from = s.t[0]; s.until = s.t[s.t.length - 1]; s.lastObs = s.until; s.prio = 1;
+                out.add(s);
+            }
+        } catch (Exception e) { Log.w(TAG, "requested launches unreadable", e); }
         out.sort((x, y) -> Integer.compare(x.prio, y.prio));
         while (out.size() > GlobeRenderer.MAX_STORMS) out.remove(out.size() - 1);
         storms = out;

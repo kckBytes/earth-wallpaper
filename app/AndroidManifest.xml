@@ -67,6 +67,8 @@
             android:excludeFromRecents="true"
             android:exported="false" />
         <receiver android:name="com.chai.earthwall.UpdateActivity$Result" android:exported="false" />
+        <!-- "Track it" on a launch notification (Settings > Requests) -->
+        <receiver android:name="com.chai.earthwall.Requests$Receiver" android:exported="false" />
         <!-- after an update: "what's new" + "finish setting up" (golden app only) -->
         <receiver android:name="com.chai.earthwall.Installed" android:exported="false">
             <intent-filter>

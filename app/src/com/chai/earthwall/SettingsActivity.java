@@ -51,6 +51,8 @@ public class SettingsActivity extends Activity {
     private static final int REQ_LOCATION = 7, REQ_FOLLOW = 8, REQ_FOLLOW_BG = 9;
     private Switch follow;
     private boolean followPending;
+    private LinearLayout reqList;
+    private android.view.View requestsAnchor;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -67,6 +69,8 @@ public class SettingsActivity extends Activity {
             return WindowInsets.CONSUMED;
         });
         setContentView(scroll);
+        if (getIntent().getBooleanExtra("requests", false))                // from a launch notification
+            scroll.post(() -> { if (requestsAnchor != null) scroll.smoothScrollTo(0, requestsAnchor.getTop()); });
 
         TextView title = text("Earth", 30, true);
         col.addView(title);
@@ -265,6 +269,23 @@ public class SettingsActivity extends Activity {
         });
         col.addView(refresh, lp(dp(8)));
 
+        header("Requests");
+        requestsAnchor = col.getChildAt(col.getChildCount() - 1);
+        TextView rqHint = text("Extra things you asked to track, on this phone only. After a rocket launches, Earth asks "
+                + "whether to follow what it carried; its orbit is usually published a day or two later and it then appears "
+                + "on the globe in green. \u201CMake permanent\u201D asks (on GitHub) for it to be added for everyone.", 12, false);
+        rqHint.setAlpha(0.6f);
+        col.addView(rqHint, lp(dp(2)));
+        reqList = new LinearLayout(this);
+        reqList.setOrientation(LinearLayout.VERTICAL);
+        col.addView(reqList, lp(dp(4)));
+        Button addReq = new Button(this);
+        addReq.setText("+ Track a recent launch");
+        addReq.setOnClickListener(v -> pickLaunch());
+        col.addView(addReq, lp(dp(6)));
+        toggle("Tell me after a rocket launches", Requests.NOTIFY, true);
+        buildRequests();
+
         header("Reset");
         Button reset = new Button(this);
         reset.setText("Reset settings to defaults");
@@ -284,6 +305,7 @@ public class SettingsActivity extends Activity {
         super.onResume();
         city.setText("Lock screen centres on: " + Prefs.home(p).name
                 + (p.getBoolean(Prefs.FOLLOW, false) && Locate.background(this) ? "  (follows you)" : ""));
+        if (reqList != null) buildRequests();
         if (followPending && Locate.background(this)) { followPending = false; startFollow(); }
         if (follow != null && follow.isChecked() && !Locate.background(this)) follow.setChecked(false);
         showUpdate();
@@ -344,6 +366,101 @@ public class SettingsActivity extends Activity {
         }
         buildCityList();
         Toast.makeText(this, "Added " + c.name, Toast.LENGTH_SHORT).show();
+    }
+
+    // ------------------------------------------------------------------ requests
+    private void buildRequests() {
+        reqList.removeAllViews();
+        List<Requests.Req> l = Requests.list(this);
+        if (l.isEmpty()) {
+            TextView none = text("No requests yet.", 13, false);
+            none.setAlpha(0.6f);
+            reqList.addView(none, lp(dp(6)));
+            return;
+        }
+        java.text.DateFormat df = android.text.format.DateFormat.getMediumDateFormat(this),
+                tf = android.text.format.DateFormat.getTimeFormat(this);
+        for (Requests.Req r : l) {
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
+            box.setCornerRadius(dp(14));
+            box.setStroke(dp(1), r.on ? 0x885CFF86 : 0x55FFFFFF);
+            card.setBackground(box);
+            card.setPadding(dp(14), dp(10), dp(14), dp(6));
+            card.addView(text((r.on ? "\u25CF  " : "\u25CB  ") + r.mission, 15, true));
+            TextView sub = text(r.rocket + " \u00B7 launched " + df.format(new java.util.Date(r.net)) + ", " + tf.format(new java.util.Date(r.net)), 12, false);
+            sub.setAlpha(0.7f);
+            card.addView(sub);
+            TextView st = text(r.result + (r.checked > 0 ? "  \u00B7  checked " + tf.format(new java.util.Date(r.checked)) : ""), 12, false);
+            st.setTextColor(r.on ? 0xFF5CFF86 : 0xFFFFC266);
+            card.addView(st, lp(dp(4)));
+            LinearLayout row = new LinearLayout(this);
+            Button check = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            check.setText("Check now"); check.setAllCaps(false);
+            check.setOnClickListener(v -> {
+                st.setText("Checking\u2026");
+                net.execute(() -> {
+                    String msg;
+                    try {
+                        List<Requests.Req> got = Requests.check(this);
+                        boolean mine = false;
+                        for (Requests.Req g : got) if (g.id.equals(r.id)) mine = true;
+                        Requests.Req now = Requests.find(Requests.list(this), r.id);
+                        msg = now != null && now.on ? (mine ? "It's out \u2014 now on your globe" : "On your globe") : "Still not available";
+                    } catch (Exception e) { msg = "Couldn't check \u2014 no connection?"; }
+                    final String m = msg;
+                    runOnUiThread(() -> { Toast.makeText(this, m, Toast.LENGTH_SHORT).show(); buildRequests(); });
+                });
+            });
+            row.addView(check);
+            Button perm = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            perm.setText(r.permanent ? "Asked \u2713" : "Make permanent"); perm.setAllCaps(false);
+            perm.setOnClickListener(v -> {
+                org.json.JSONObject o = Requests.launched(this).get(r.id);
+                try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(Requests.permanentUrl(r, o)))); }
+                catch (Exception e) { toast("No browser found"); return; }
+                Requests.setPermanentAsked(this, r.id);
+                buildRequests();
+            });
+            row.addView(perm);
+            Button rm = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            rm.setText("Remove"); rm.setAllCaps(false);
+            rm.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("Stop tracking " + r.mission + "?")
+                    .setPositiveButton("Remove", (d, w) -> { Requests.remove(this, r.id); buildRequests(); })
+                    .setNegativeButton("Cancel", null).show());
+            row.addView(rm);
+            card.addView(row);
+            reqList.addView(card, lp(dp(8)));
+        }
+    }
+
+    /** Recent launches from the server's list: pick one to track. */
+    private void pickLaunch() {
+        toast("Getting recent launches\u2026");
+        net.execute(() -> {
+            try { Requests.fetch(this); } catch (Exception e) { /* use the copy we have */ }
+            java.util.Map<String, org.json.JSONObject> m = Requests.launched(this);
+            List<Requests.Req> mine = Requests.list(this);
+            List<org.json.JSONObject> pick = new java.util.ArrayList<>();
+            for (org.json.JSONObject o : m.values()) if (Requests.find(mine, o.optString("id")) == null) pick.add(o);
+            runOnUiThread(() -> {
+                if (pick.isEmpty()) { toast(m.isEmpty() ? "No launch list yet \u2014 try again later" : "You're already tracking every recent launch"); return; }
+                java.text.DateFormat df = android.text.format.DateFormat.getMediumDateFormat(this);
+                String[] lines = new String[pick.size()];
+                for (int i = 0; i < lines.length; i++) {
+                    org.json.JSONObject o = pick.get(i);
+                    lines[i] = o.optString("mission") + "\n" + o.optString("rocket") + " \u00B7 " + df.format(new java.util.Date(o.optLong("net")))
+                            + (o.optBoolean("available") ? " \u00B7 orbit out" : " \u00B7 orbit not out yet");
+                }
+                new AlertDialog.Builder(this).setTitle("Track a recent launch")
+                        .setItems(lines, (d, w) -> {
+                            org.json.JSONObject o = pick.get(w);
+                            Requests.add(this, o.optString("id"), o.optString("rocket"), o.optString("mission"), o.optLong("net"));
+                            buildRequests();
+                        }).setNegativeButton("Cancel", null).show();
+            });
+        });
     }
 
     // ------------------------------------------------------------------ reset
