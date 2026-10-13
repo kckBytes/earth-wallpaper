@@ -558,6 +558,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     // ---- time warp (control mode): hold to fast-forward, release to snap back to now
     private volatile boolean warp;
     private double warpOffsetMs;
+    private double sunBackMs;                       // how far back the sun is shown (replays), eased to 0 after
     void setTimeWarp(boolean on) { warp = on; h.post(this::kick); }
 
     /** Control mode: zoom in/out one step around the current centre. */
@@ -880,11 +881,16 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
 
         if (warp) warpOffsetMs += dt * 7_200_000.0;                       // 2 hours per second
         else if (warpOffsetMs > 0) warpOffsetMs = warpOffsetMs < 60_000 ? 0 : warpOffsetMs * Math.exp(-6.0 * dt);
+        // a replay you start turns the sun back with it (day/night, city lights), then lets it run forward to now
+        if (replay != null && replayLabelled) {
+            double target = System.currentTimeMillis() - (replay.a >= 0 ? replay.timeMs() : replay.t[0]);
+            sunBackMs = replay.a >= 0 ? target : sunBackMs + (target - sunBackMs) * (1 - Math.exp(-8.0 * dt));
+        } else if (sunBackMs > 0) sunBackMs = sunBackMs < 60_000 ? 0 : sunBackMs * Math.exp(-3.0 * dt);
         float wake = Math.min(1f, (frameNs - wakeNs) / 1.0e9f);
         float cloudMix = cloudFadeNs == 0 ? 1f : Math.min(1f, (frameNs - cloudFadeNs) / 3.0e9f);
         lapseOffsetMs(frameNs);                                         // ends the time-lapse when due
         stepReplay(frameNs);
-        boolean animating = (replay != null && !paused) || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || wake < 1f || readyFade < 1f || cloudMix < 1f
+        boolean animating = (replay != null && !paused) || tailNs != 0 || lapseNs != 0 || twEase != 0 || dragging || sticking() || warp || warpOffsetMs > 0 || (sunBackMs > 0 && replay == null) || wake < 1f || readyFade < 1f || cloudMix < 1f
                 || (labelStartNs != 0 && !labelHold)
                 || Math.abs(zoomOut - zoomOutTarget) > 1e-3f || Math.abs(home - homeTarget) > 1e-3f;
         // Hand tremor alone moves the parallax by far less than a pixel: ignore it (deadband).
@@ -943,7 +949,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         lat = Math.max(-80, Math.min(80, lat - parY * 45.0 / pzr));
         Astro.viewToEcef(lat, lon, fr.view);
         long nowMs = System.currentTimeMillis() + (long) warpOffsetMs;
-        fr.gmst = (float) Astro.sun(nowMs, fr.sun);
+        fr.gmst = (float) Astro.sun(nowMs - (long) sunBackMs, fr.sun);
 
         fr.w = width; fr.h = height; fr.cx = cx; fr.cy = cy; fr.radius = radius; fr.camDist = dist;
         fr.cloudMix = cloudMix; fr.nowMs = nowMs; fr.cloudNowMs = nowMs + (long) lapseOffsetMs(frameNs);
