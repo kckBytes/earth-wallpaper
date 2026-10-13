@@ -36,9 +36,13 @@ final class ReplayStore {
     private static String suffix(String kind) { return kind.equals("bt") ? "_bt.jpg" : "_c.jpg"; }
 
     static void sync(Context c, SharedPreferences p, boolean metered) throws Exception {
+        sync(c, p, metered, p.getInt(Prefs.REPLAY_H, 12));
+    }
+
+    /** Downloads what's missing of the last `hours` (control mode asks for 24); keeps up to 24 h on the phone. */
+    static void sync(Context c, SharedPreferences p, boolean metered, int hours) throws Exception {
         String kind = CloudUpdater.kind(p);
         if (kind.equals("sst")) return;                                   // daily map, nothing to replay
-        int hours = p.getInt(Prefs.REPLAY_H, 12);
         byte[] fj = CloudUpdater.download(CloudUpdater.LIVE_URL + "frames.json?t=" + System.currentTimeMillis(), 20_000);
         JSONObject j = new JSONObject(new String(fj, "UTF-8"));
         write(new File(dir(c), "frames.json"), fj);                     // kept for the per-step activity
@@ -85,7 +89,7 @@ final class ReplayStore {
                 long t = Long.parseLong(f.getName().substring(0, f.getName().indexOf('_')));
                 if (!listed.contains(t)) { if (f.delete()) stale++; continue; }
                 boolean other = !f.getName().endsWith("_f.png") && !f.getName().endsWith(suffix(kind));
-                if (t < newest - 24 * H - 60_000 || (!other && t < newest - hours * H - 60_000)) f.delete();
+                if (t < newest - 24 * H - 60_000) f.delete();              // a full day stays for control mode's replay
             } catch (Exception e) { f.delete(); }
         }
         if (stale > 0) Log.i(TAG, "replay: removed " + stale + " files of frames the server no longer lists");

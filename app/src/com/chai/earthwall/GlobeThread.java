@@ -214,7 +214,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     void playTimelapse() {
         h.post(() -> {
             if (replay != null || fetching) { Log.i(TAG, "replay: busy (" + (replay != null ? "playing" : "fetching") + ")"); return; }
-            int hours = cfg.replayH;
+            int hours = mode == MODE_EXPLORE ? 24 : cfg.replayH;        // control mode: the whole last day
             final String kind = dataKind;
             java.util.List<Long> ts = kind.equals("sst") ? new java.util.ArrayList<>() : ReplayStore.available(ctx, kind, hours);
             // fewer than ~3/4 of the half-hour frames on the phone (new install, the wallpaper hasn't run long,
@@ -224,7 +224,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 Log.i(TAG, "replay: only " + ts.size() + " frames for " + hours + " h, fetching");
                 showLabel("Getting the real frames\u2026", true);
                 new Thread(() -> {
-                    try { ReplayStore.sync(ctx, Prefs.get(ctx), false); }
+                    try { ReplayStore.sync(ctx, Prefs.get(ctx), false, hours); }
                     catch (Exception e) { Log.w(TAG, "replay fetch failed: " + e); }
                     h.post(() -> {
                         fetching = false;
@@ -255,7 +255,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         // between them (a 4 h gap in the data takes 8x a 30 min step), short crossfades, no estimated motion
         double[] gaps = new double[Math.max(1, ts.size() - 1)];
         for (int i = 0; i + 1 < ts.size(); i++) gaps[i] = Math.max(1.0, (ts.get(i + 1) - ts.get(i)) / 1_800_000.0);
-        replay = new ReplayPlayer(ts, dataKind, Math.max(8.0, hours * 1.0), gaps, null);
+        replay = new ReplayPlayer(ts, dataKind, Math.max(8.0, hours * 0.8), gaps, null);
         replay.literal = true;
         Log.i(TAG, "replay start: " + ts.size() + " frames, " + hours + " h");
         replayHours = hours;
@@ -1008,9 +1008,11 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         applyWx(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, sdt);
         projectDots(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
         projectStorms(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, dist, cx, cy, radius);
+        projectTracks(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
         fr.labelAmt = labelAlpha(frameNs) * readyFade;
         fr.labelCx = width * 0.5f;
-        fr.labelCy = Math.max(cy - radius - 46f * ctx.getResources().getDisplayMetrics().density * pixelScale,
+        fr.labelCy = replayLabelled && (replay != null || labelHold) ? height * 0.915f   // replay clock: at the top
+                : Math.max(cy - radius - 46f * ctx.getResources().getDisplayMetrics().density * pixelScale,
                 height * 0.07f);                                       // just under the globe
         r.draw(fr);
         if (!EGL14.eglSwapBuffers(dpy, window)) {
@@ -1048,6 +1050,76 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
     private long skyMtime = -1, auroraMtime = -1;
     private long[] fT = new long[0], bT = new long[0];
     private float[] fXyz = new float[0], fPow = new float[0], bXyz = new float[0], bN = new float[0];
+    private final java.nio.FloatBuffer trackBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_TRACK * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+    private final java.nio.FloatBuffer fixBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_TRACK * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+    private final double[] trackLL = new double[2];
+
+    /** Hurricanes / cyclones: the path so far (up to the moment on screen) and an arrow for where it's heading. */
+    private void projectTracks(long T) {
+        fr.trackN = fr.fixN = 0;
+        if (!cfg.storms || storms.isEmpty() || !Prefs.labelOn(cfg.mask, "storm")) return;
+        trackBuf.position(0); fixBuf.position(0);
+        int nv = 0, nf = 0;
+        final int CAP = GlobeRenderer.MAX_TRACK - 8;
+        for (Storm s : storms) {
+            if (!"storm".equals(s.type) || !stormAt(s, T, trackLL)) continue;
+            int k = 0;
+            while (k < s.t.length && s.t[k] <= T) k++;               // fixes already observed at T
+            double[] cur = ecef(trackLL[0], trackLL[1]);
+            for (int i = 0; i < k && nf < CAP; i++) {
+                float a = 0.30f + 0.60f * (i + 1) / (float) k;           // older = fainter
+                double[] p0 = ecef(s.lat[i], s.lon[i]);
+                fixBuf.put((float) p0[0]).put((float) p0[1]).put((float) p0[2]).put(a); nf++;
+                double[] p1 = i + 1 < k ? ecef(s.lat[i + 1], s.lon[i + 1]) : cur;
+                float a1 = i + 1 < k ? 0.30f + 0.60f * (i + 2) / (float) k : 0.95f;
+                double ang = Math.acos(Math.max(-1, Math.min(1, p0[0] * p1[0] + p0[1] * p1[1] + p0[2] * p1[2])));
+                int steps = Math.max(1, Math.min(24, (int) Math.ceil(Math.toDegrees(ang) / 0.8)));
+                double[] prev = p0;
+                for (int j = 1; j <= steps && nv < CAP; j++) {             // follow the curve of the Earth
+                    double f = j / (double) steps;
+                    double[] q = norm(p0[0] + (p1[0] - p0[0]) * f, p0[1] + (p1[1] - p0[1]) * f, p0[2] + (p1[2] - p0[2]) * f);
+                    float aa = (float) (a + (a1 - a) * f);
+                    putV(trackBuf, prev, aa); putV(trackBuf, q, aa); nv += 2;
+                    prev = q;
+                }
+            }
+            // heading: from where it was 3 h earlier to now, as a small arrow just ahead of the storm
+            if (stormAt(s, Math.max(s.t[0], T - 3 * 3_600_000L), trackLL)) {
+                double[] was = ecef(trackLL[0], trackLL[1]);
+                double dx = cur[0] - was[0], dy = cur[1] - was[1], dz = cur[2] - was[2];
+                double rad = dx * cur[0] + dy * cur[1] + dz * cur[2];
+                dx -= rad * cur[0]; dy -= rad * cur[1]; dz -= rad * cur[2];      // along the surface
+                double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (len > 1e-6 && nv < CAP) {
+                    dx /= len; dy /= len; dz /= len;
+                    double nx = cur[1] * dz - cur[2] * dy, ny = cur[2] * dx - cur[0] * dz, nz = cur[0] * dy - cur[1] * dx;
+                    double[] st = norm(cur[0] + dx * 0.014, cur[1] + dy * 0.014, cur[2] + dz * 0.014);
+                    double[] tip = norm(cur[0] + dx * 0.05, cur[1] + dy * 0.05, cur[2] + dz * 0.05);
+                    double[] wl = norm(tip[0] - dx * 0.016 + nx * 0.012, tip[1] - dy * 0.016 + ny * 0.012, tip[2] - dz * 0.016 + nz * 0.012);
+                    double[] wr = norm(tip[0] - dx * 0.016 - nx * 0.012, tip[1] - dy * 0.016 - ny * 0.012, tip[2] - dz * 0.016 - nz * 0.012);
+                    putV(trackBuf, st, 1f); putV(trackBuf, tip, 1f);
+                    putV(trackBuf, tip, 1f); putV(trackBuf, wl, 1f);
+                    putV(trackBuf, tip, 1f); putV(trackBuf, wr, 1f);
+                    nv += 6;
+                }
+            }
+        }
+        trackBuf.position(0); fixBuf.position(0);
+        fr.trackLines = trackBuf; fr.trackN = nv;
+        fr.trackFixes = fixBuf; fr.fixN = nf;
+    }
+    private static double[] ecef(double latDeg, double lonDeg) {
+        double la = Math.toRadians(latDeg), lo = Math.toRadians(lonDeg);
+        return new double[]{Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)};
+    }
+    private static double[] norm(double x, double y, double z) {
+        double l = Math.sqrt(x * x + y * y + z * z);
+        return new double[]{x / l, y / l, z / l};
+    }
+    private static void putV(java.nio.FloatBuffer b, double[] p, float a) {
+        b.put((float) p[0]).put((float) p[1]).put((float) p[2]).put(a);
+    }
+
     private final java.nio.FloatBuffer fireBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_DOTS * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
     private final java.nio.FloatBuffer boltBuf = java.nio.ByteBuffer.allocateDirect(GlobeRenderer.MAX_DOTS * 16).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
     private final java.util.Random flick = new java.util.Random();
