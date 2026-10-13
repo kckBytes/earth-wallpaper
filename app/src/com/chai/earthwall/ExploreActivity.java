@@ -120,13 +120,18 @@ public class ExploreActivity extends Activity implements SurfaceHolder.Callback 
             int a2 = e.getActionMasked();
             if (a2 == MotionEvent.ACTION_DOWN) {
                 v.setPressed(true);
-                hold[0] = () -> { hold[0] = null; gl.setTimeWarp(true); };
+                hold[0] = () -> {                         // holding during a replay does nothing (tap = pause)
+                    hold[0] = null;
+                    if (gl.isReplaying() || gl.isFetching()) return;
+                    android.util.Log.i("EarthWall", "clock hold: fast-forward"); gl.setTimeWarp(true);
+                };
                 v.postDelayed(hold[0], 280);
             } else if (a2 == MotionEvent.ACTION_UP || a2 == MotionEvent.ACTION_CANCEL) {
                 v.setPressed(false);
                 if (hold[0] != null) {                  // a tap: the stored satellite frames, same as back triple-tap
                     v.removeCallbacks(hold[0]); hold[0] = null;
                     if (a2 == MotionEvent.ACTION_UP) {
+                        android.util.Log.i("EarthWall", "clock tap: replaying=" + gl.isReplaying() + " fetching=" + gl.isFetching());
                         if (gl.isReplaying()) gl.togglePause();
                         else if (!gl.isFetching()) gl.playTimelapse();
                         v.postDelayed(this::syncTimeButton, 60);
