@@ -40,7 +40,7 @@ import java.util.concurrent.Executors;
 public class SettingsActivity extends Activity {
     private SharedPreferences p;
     private LinearLayout col;
-    private TextView status, city;
+    private TextView status, city, update;
     private LinearLayout cityList;
     private final ExecutorService net = Executors.newSingleThreadExecutor();
     private static final int REQ_LOCATION = 7;
@@ -66,6 +66,16 @@ public class SettingsActivity extends Activity {
         status = text("", 14, false);
         status.setAlpha(0.7f);
         col.addView(status);
+
+        // tap-to-update (golden app only): shows when a newer build is published
+        update = text("", 15, true);
+        update.setTextColor(0xFF7FC8FF);
+        update.setVisibility(android.view.View.GONE);
+        update.setOnClickListener(v -> startActivity(new android.content.Intent(this, UpdateActivity.class)));
+        col.addView(update, lp(dp(10)));
+        if (Updater.enabled(this) && android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41);
 
         Button set = new Button(this);
         set.setText("Set as wallpaper");
@@ -236,10 +246,19 @@ public class SettingsActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         city.setText("Lock screen centres on: " + Prefs.home(p).name);
+        showUpdate();
+        if (Updater.enabled(this)) { Updater.check(this, true); update.postDelayed(this::showUpdate, 4000); }
         buildCityList();
         long t = p.getLong(Prefs.CLOUDS_TIME, 0);
         status.setText(t == 0 ? "Clouds: bundled snapshot (updates once the wallpaper is visible)"
                 : "Latest satellite cloud map: " + DateUtils.getRelativeTimeSpanString(t).toString().toLowerCase());
+    }
+
+    private void showUpdate() {
+        Updater.Info u = Updater.pending(this);
+        if (u == null) { update.setVisibility(android.view.View.GONE); return; }
+        update.setText("Update ready: Earth " + u.name + "  ›  tap to install");
+        update.setVisibility(android.view.View.VISIBLE);
     }
 
     // ------------------------------------------------------------------ cities
