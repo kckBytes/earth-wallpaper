@@ -93,7 +93,17 @@ public class UpdateActivity extends Activity {
         } else {
             title.setText("Earth " + info.name + " is ready");
             body.setText((info.notes.isEmpty() ? "" : info.notes + "\n\n") + "You have " + Updater.installedName(this) + ".");
-            go.setText("Update");
+            go.setText("Update now");
+            go.setAllCaps(false);
+            go.setTextColor(0xFFFFFFFF);
+            go.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+            go.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            android.graphics.drawable.GradientDrawable red = new android.graphics.drawable.GradientDrawable();
+            red.setColor(0xFFD93025);
+            red.setCornerRadius(dp(28));
+            go.setBackground(new android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(0x40FFFFFF), red, null));
+            go.setPadding(dp(20), dp(14), dp(20), dp(14));
             go.setOnClickListener(v -> start());
         }
     }
