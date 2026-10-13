@@ -50,6 +50,7 @@ public class SettingsActivity extends Activity {
     private final ExecutorService net = Executors.newSingleThreadExecutor();
     private static final int REQ_LOCATION = 7, REQ_FOLLOW = 8, REQ_FOLLOW_BG = 9;
     private Switch follow;
+    private boolean chainFollow, followPending;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -122,7 +123,10 @@ public class SettingsActivity extends Activity {
         follow = new Switch(this);
         follow.setText("Follow me when I travel");
         follow.setChecked(p.getBoolean(Prefs.FOLLOW, false) && Locate.background(this));
-        follow.setOnCheckedChangeListener((v, on) -> { if (on) startFollow(); else p.edit().putBoolean(Prefs.FOLLOW, false).apply(); });
+        follow.setOnCheckedChangeListener((v, on) -> {
+            if (!on) { p.edit().putBoolean(Prefs.FOLLOW, false).apply(); buildSetup(); }
+            else if (!followOn(this)) startFollow();
+        });
         col.addView(follow, lp(dp(10)));
         TextView followHint = text("Home moves with you: when you're 30+ km away, the lock screen centres on where you are, "
                 + "no app open. It only reads the location your phone already has, at most every 30 min, so no extra battery.", 12, false);
@@ -279,6 +283,7 @@ public class SettingsActivity extends Activity {
         super.onResume();
         city.setText("Lock screen centres on: " + Prefs.home(p).name
                 + (p.getBoolean(Prefs.FOLLOW, false) && Locate.background(this) ? "  (follows you)" : ""));
+        if (followPending && Locate.background(this)) { followPending = false; startFollow(); }
         if (follow != null && follow.isChecked() && !Locate.background(this)) follow.setChecked(false);
         showUpdate();
         buildSetup();
@@ -334,6 +339,7 @@ public class SettingsActivity extends Activity {
             Prefs.setHome(p, c);
             Toast.makeText(this, "Home set to " + c.name, Toast.LENGTH_SHORT).show();
             onResume();
+            if (chainFollow) { chainFollow = false; if (!followOn(this)) startFollow(); }   // setup: straight on to "all the time"
             return;
         }
         buildCityList();
@@ -379,11 +385,16 @@ public class SettingsActivity extends Activity {
     static int[] setupProgress(Context c) {
         SharedPreferences sp = Prefs.get(c);
         boolean notify = Updater.enabled(c);
-        boolean[] d = {sp.contains(Prefs.CITY_LAT), wallpaperSet(c), sp.getBoolean(SETUP_TILE, false),
+        boolean[] d = {sp.contains(Prefs.CITY_LAT), followOn(c), wallpaperSet(c), sp.getBoolean(SETUP_TILE, false),
                 !notify || notifyAllowed(c), sp.getBoolean(SETUP_CONTROL, false)};
         int n = 0;
-        for (int i = 0; i < d.length; i++) if (d[i] && (notify || i != 3)) n++;
-        return new int[]{n, notify ? 5 : 4};
+        for (int i = 0; i < d.length; i++) if (d[i] && (notify || i != 4)) n++;
+        return new int[]{n, notify ? 6 : 5};
+    }
+
+    /** Location "Allow all the time" granted and following switched on. */
+    static boolean followOn(Context c) {
+        return Prefs.get(c).getBoolean(Prefs.FOLLOW, false) && Locate.background(c);
     }
 
     static boolean notifyAllowed(Context c) {
@@ -408,9 +419,9 @@ public class SettingsActivity extends Activity {
     private void buildSetup() {
         setup.removeAllViews();
         boolean notify = Updater.enabled(this);                   // only the shared app gets update notifications
-        boolean[] done = {stepHome(), stepWallpaper(), p.getBoolean(SETUP_TILE, false), !notify || stepNotify(), p.getBoolean(SETUP_CONTROL, false)};
-        int total = notify ? 5 : 4, n = 0;
-        for (int i = 0; i < done.length; i++) if (done[i] && (notify || i != 3)) n++;
+        boolean[] done = {stepHome(), followOn(this), stepWallpaper(), p.getBoolean(SETUP_TILE, false), !notify || stepNotify(), p.getBoolean(SETUP_CONTROL, false)};
+        int total = notify ? 6 : 5, n = 0;
+        for (int i = 0; i < done.length; i++) if (done[i] && (notify || i != 4)) n++;
         if (n >= total || p.getBoolean(SETUP_HIDDEN, false)) { setup.setVisibility(android.view.View.GONE); return; }
         setup.setVisibility(android.view.View.VISIBLE);
         android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
@@ -422,20 +433,23 @@ public class SettingsActivity extends Activity {
 
         TextView head = text("Set up Earth  ·  " + n + " of " + total + " done", 17, true);
         setup.addView(head);
-        TextView sub = text("Five quick steps so it works the way it's meant to.", 13, false);
+        TextView sub = text((total == 6 ? "Six" : "Five") + " quick steps so it works the way it's meant to.", 13, false);
         sub.setAlpha(0.7f);
         setup.addView(sub);
 
         Prefs.City home = Prefs.home(p);
         setupRow(done[0], "Your home city", done[0] ? "Centred on " + home.name : "The globe turns to face it every time the screen wakes",
-                "Use my location", v -> { homeFromNextAdd = true; myLocation(); });
-        setupRow(done[1], "Set it as your wallpaper", "Lock screen (and home screen if you like)",
+                "Use my location", v -> { homeFromNextAdd = true; chainFollow = true; myLocation(); });
+        setupRow(done[1], "Location: Allow all the time", done[1] ? "Home follows you when you travel"
+                        : "So the globe follows you when you travel, with no app open. Choose \u201CAllow all the time\u201D",
+                "Allow", v -> startFollow());
+        setupRow(done[2], "Set it as your wallpaper", "Lock screen (and home screen if you like)",
                 "Set", v -> openPicker());
-        setupRow(done[2], "Add the Earth tile", "Swipe down on the lock screen, tap Earth: zoom, cities, time-lapse, no unlock",
+        setupRow(done[3], "Add the Earth tile", "Swipe down on the lock screen, tap Earth: zoom, cities, time-lapse, no unlock",
                 "Add", v -> addTile());
-        if (notify) setupRow(done[3], "Allow update alerts", "So you hear when a new version is out",
+        if (notify) setupRow(done[4], "Allow update alerts", "So you hear when a new version is out",
                 "Allow", v -> requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 41));
-        setupRow(done[4], "Try control mode", "Buttons for zoom, next city, and hold ◷ to fast-forward the clouds",
+        setupRow(done[5], "Try control mode", "Buttons for zoom, next city, and hold ◷ to fast-forward the clouds",
                 "Try", v -> { p.edit().putBoolean(SETUP_CONTROL, true).apply(); startActivity(new Intent(this, ExploreActivity.class)); });
 
         TextView skip = text("Hide this", 13, false);
@@ -579,15 +593,30 @@ public class SettingsActivity extends Activity {
                             + "Pick that on the next screen, then come back.")
                     .setPositiveButton("Continue", (d, w) -> requestPermissions(
                             new String[]{android.Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_FOLLOW_BG))
-                    .setNegativeButton("Cancel", (d, w) -> follow.setChecked(false))
+                    .setNegativeButton("Not now", (d, w) -> follow.setChecked(false))
                     .setOnCancelListener(d -> follow.setChecked(false))
                     .show();
             return;
         }
         p.edit().putBoolean(Prefs.FOLLOW, true).apply();
         getSharedPreferences("follow", MODE_PRIVATE).edit().remove("checked").apply();   // check on the next wake
+        if (follow != null && !follow.isChecked()) follow.setChecked(true);
+        buildSetup();
         if (!Locate.switchedOn(this)) Toast.makeText(this, "Following is on. Turn on Location so it can work.", Toast.LENGTH_LONG).show();
         else Toast.makeText(this, "Following is on", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Anything short of "Allow all the time" (while using, only this time, don't allow): the app's own page, where it's one tap. */
+    private void allTheTimeInSettings() {
+        new AlertDialog.Builder(this).setTitle("Earth needs \u201CAllow all the time\u201D")
+                .setMessage("It only uses the location your phone already has, at most every 30 min, so it costs no battery. "
+                        + "On the next screen: Permissions \u2192 Location \u2192 Allow all the time.")
+                .setPositiveButton("Open settings", (d, w) -> {
+                    followPending = true;
+                    startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.parse("package:" + getPackageName())));
+                })
+                .setNegativeButton("Not now", null).show();
     }
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
@@ -600,11 +629,11 @@ public class SettingsActivity extends Activity {
         }
         if (req == REQ_FOLLOW) {
             if (ok) startFollow();
-            else { follow.setChecked(false); if (!shouldShowRequestPermissionRationale(android.Manifest.permission.ACCESS_COARSE_LOCATION)) permissionBlocked("Allow all the time"); }
+            else { follow.setChecked(false); allTheTimeInSettings(); }
         }
         if (req == REQ_FOLLOW_BG) {
             if (Locate.background(this)) startFollow();
-            else { follow.setChecked(false); Toast.makeText(this, "Needs \u201CAllow all the time\u201D to follow you", Toast.LENGTH_LONG).show(); }
+            else { follow.setChecked(false); allTheTimeInSettings(); }
         }
     }
 
