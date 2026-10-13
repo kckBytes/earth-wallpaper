@@ -5,7 +5,7 @@
 #    version.json points at the APK by its exact commit, so a cached old file can never be mixed up with a new one
 # 3. commits the version bump and pushes the golden branch and main
 param([Parameter(Mandatory = $true)][string]$Notes)
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'   # git prints warnings on stderr; failures are checked by exit code
 $root = Split-Path $PSScriptRoot -Parent
 $repo = 'https://github.com/kckBytes/earth-live.git'
 
@@ -31,6 +31,7 @@ git -C $dist init -q
 git -C $dist checkout -q -b dist
 git -C $dist add Earth.apk
 git -C $dist commit -q -m "Earth $name ($code): app file"
+if ($LASTEXITCODE -ne 0) { throw "commit failed (git user.name/email set?)" }
 $apkCommit = (git -C $dist rev-parse HEAD).Trim()
 $json = [ordered]@{
     versionCode = $code; versionName = $name
@@ -41,11 +42,12 @@ $json = [ordered]@{
 [IO.File]::WriteAllText((Join-Path $dist 'version.json'), $json, (New-Object Text.UTF8Encoding $false))
 git -C $dist add version.json
 git -C $dist commit -q -m "Earth $name ($code): version.json"
-git -C $dist push -q -f $repo dist
+git -C $dist push -q -f $repo dist 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "push to earth-live failed" }
 "== published to earth-live/dist"
 
 git -C $root add build.ps1
 git -C $root commit -q -m "Release Earth $name ($code): $Notes"
-git -C $root push -q origin HEAD
-git -C $root push -q origin HEAD:main
+git -C $root push -q origin HEAD 2>&1 | Out-Null
+git -C $root push -q origin HEAD:main 2>&1 | Out-Null
 "== Earth $name is live. Shared copies will offer the update within 6 h (or when Settings is opened)."
