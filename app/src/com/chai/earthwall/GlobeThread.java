@@ -1011,6 +1011,7 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
         streakNs = frameNs;
         applyWx(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, sdt);
         projectDots(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
+        selectLabels(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, frameNs);
         projectStorms(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs, dist, cx, cy, radius);
         projectTracks(replay != null && replay.a >= 0 ? replay.timeMs() : fr.cloudNowMs);
         fr.labelAmt = labelAlpha(frameNs) * readyFade;
@@ -1293,19 +1294,60 @@ final class GlobeThread extends HandlerThread implements Choreographer.FrameCall
                 out.add(s);
             }
         } catch (Exception e) { Log.w(TAG, "requested launches unreadable", e); }
-        out.sort((x, y) -> Integer.compare(x.prio, y.prio));
-        while (out.size() > GlobeRenderer.MAX_STORMS) out.remove(out.size() - 1);
-        storms = out;
-        Bitmap[] bs = new Bitmap[out.size()];
-        float[] ax = new float[out.size()], ay = new float[out.size()];
-        for (int i = 0; i < out.size(); i++) {
-            Storm s = out.get(i);
+        all = out;                                       // the backing store: everything, alive or not
+        selDirty = true;
+    }
+
+    // ---- which labels get one of the GPU label slots (a cache over 'all'):
+    //  * dead is dead: outside its time window (a launch 10 min after lift-off) or its category switched off,
+    //    a label holds no slot. Chosen again whenever that changes, at the replay's time too, so when something
+    //    ends, the best one left out comes back.
+    //  * ranks: 0 the 8 satellites (permanent, few: never pushed out), 1 events (storms, launches, quakes,
+    //    volcanoes, fires, floods), 2 weather highs/lows. A full list drops from the lowest rank first, and
+    //    within a rank the oldest (earliest start) goes first.
+    private List<Storm> all = new ArrayList<>();
+    private boolean selDirty = true;
+    private long selNs;
+    private int selMask;
+
+    private static int rankOf(Storm s) {
+        switch (s.type) {
+            case "camera": case "sat": return 0;
+            case "low": case "high": return 2;
+            default: return 1;
+        }
+    }
+
+    private static boolean alive(Storm s, long T) {
+        if (T < s.from || T > s.until) return false;
+        return !s.type.equals("launch") || T - s.lastObs <= LAUNCH_WIN;   // lastObs = lift-off time
+    }
+
+    private void selectLabels(long T, long frameNs) {
+        if (!selDirty && selMask == cfg.mask && frameNs - selNs < 1_000_000_000L) return;
+        selNs = frameNs; selMask = cfg.mask;
+        List<Storm> pick = new ArrayList<>();
+        for (Storm s : all) if (Prefs.labelOn(cfg.mask, s.type) && alive(s, T)) pick.add(s);
+        int wanted = pick.size();
+        pick.sort((x, y) -> {
+            int c = Integer.compare(rankOf(x), rankOf(y));
+            return c != 0 ? c : Long.compare(y.from, x.from);          // newer first
+        });
+        while (pick.size() > GlobeRenderer.MAX_STORMS) pick.remove(pick.size() - 1);
+        pick.sort((x, y) -> Integer.compare(x.prio, y.prio));          // drawing / room-making order
+        if (!selDirty && pick.equals(storms)) return;                   // same set as now: nothing to rebuild
+        selDirty = false;
+        storms = pick;
+        Bitmap[] bs = new Bitmap[pick.size()];
+        float[] ax = new float[pick.size()], ay = new float[pick.size()];
+        for (int i = 0; i < pick.size(); i++) {
+            Storm s = pick.get(i);
             bs[i] = makeStormLabel(s, ax, ay, i);
             s.w = bs[i].getWidth(); s.h = bs[i].getHeight(); s.ax = ax[i]; s.ay = ay[i];
         }
         if (glOk) r.setStormLabels(bs, ax, ay);
         for (Bitmap b : bs) b.recycle();
-        if (!out.isEmpty()) Log.i(TAG, "globe labels: " + out.size());
+        Log.i(TAG, "globe labels: " + pick.size() + " shown of " + wanted + " alive, " + all.size() + " known");
     }
 
     private Bitmap makeStormLabel(Storm s, float[] ax, float[] ay, int i) {
